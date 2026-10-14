@@ -56,8 +56,25 @@
   box-sizing: border-box;
 }
 
+/* Settings > Appearance > Font sets data-font on <html>; unset = system default. */
+:root {
+  --font-body: -apple-system, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', sans-serif;
+}
+
+:root[data-font="humanist"] {
+  --font-body: Verdana, 'Trebuchet MS', 'DejaVu Sans', sans-serif;
+}
+
+:root[data-font="serif"] {
+  --font-body: Georgia, 'Iowan Old Style', 'Times New Roman', serif;
+}
+
+:root[data-font="mono"] {
+  --font-body: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+}
+
 body {
-  font-family: -apple-system, 'SF Pro Display', 'Segoe UI', 'Helvetica Neue', sans-serif;
+  font-family: var(--font-body);
   font-size: var(--fs-md);
   line-height: 1.5;
   color: var(--text);
@@ -347,6 +364,76 @@ label:has(input:focus-visible) {
   color: var(--text-muted);
 }
 
+.fold-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+}
+
+#settings-status {
+  flex: 1;
+  min-width: 0;
+}
+
+#fold-all {
+  margin-left: auto;
+}
+
+/* Settings sections: each one is a dropdown (<details>) that opens under its label. */
+.fold {
+  margin-top: var(--s2);
+  padding-bottom: var(--s2);
+  border-bottom: 1px solid var(--border);
+}
+
+.fold > summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  min-height: 32px;
+  margin-bottom: 0;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.fold > summary::-webkit-details-marker {
+  display: none;
+}
+
+.fold > summary::after {
+  content: '';
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin-right: var(--s1);
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(45deg);
+  transition: transform 0.15s ease;
+}
+
+.fold[open] > summary {
+  margin-bottom: var(--s2);
+  color: var(--text);
+}
+
+.fold[open] > summary::after {
+  transform: rotate(-135deg) translate(-2px, -2px);
+}
+
+.fold > summary:hover {
+  color: var(--text);
+}
+
+.fold > summary:focus-visible {
+  outline: 2px solid var(--text-muted);
+  outline-offset: 2px;
+  border-radius: var(--radius);
+}
+
 .section-head {
   display: flex;
   align-items: baseline;
@@ -544,7 +631,7 @@ label.row {
 
 #settings-status {
   min-height: 1.4em;
-  margin-top: var(--s2);
+  margin-top: 0;
   font-size: var(--fs-xs);
   color: var(--text-muted);
 }
@@ -1001,6 +1088,38 @@ video.hero-media {
   display: none;
 }
 
+/* Loading state: a small ring spinner before the text. Border colours come from
+   the theme tokens, so it follows light/dark. */
+.msg.is-loading {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+}
+
+.msg.is-loading::before {
+  content: "";
+  flex: none;
+  width: 14px;
+  height: 14px;
+  box-sizing: border-box;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .msg.is-loading::before {
+    animation-duration: 2.4s;
+  }
+}
+
 .error-box {
   padding: var(--s2) 10px;
   font-size: var(--fs-sm);
@@ -1151,41 +1270,37 @@ video.hero-media {
   max-width: none;
 }
 
+/* Trim bar: a timeline where the kept clip is a framed band between two grip handles and
+   everything outside it is dimmed. --lo-f / --hi-f are the handles' positions as 0..1. */
 .dual-range {
+  --grip: 14px;
   position: relative;
-  height: 22px;
-  margin: 2px 0;
+  height: 36px;
+  overflow: hidden;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
 }
 
-.dual-range::before,
 .dual-range::after {
   content: '';
   position: absolute;
-  top: 50%;
-  height: 4px;
-  margin-top: -2px;
-  border-radius: 2px;
-}
-
-.dual-range::before {
-  left: 0;
-  right: 0;
-  background: var(--border-strong);
-}
-
-.dual-range::after {
-  left: var(--lo, 0%);
-  right: calc(100% - var(--hi, 100%));
-  background: var(--accent);
+  top: 0;
+  bottom: 0;
+  left: calc(var(--grip) / 2 + (100% - var(--grip)) * var(--lo-f, 0));
+  right: calc(var(--grip) / 2 + (100% - var(--grip)) * (1 - var(--hi-f, 1)));
+  border-top: 2px solid var(--accent);
+  border-bottom: 2px solid var(--accent);
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.4);
+  pointer-events: none;
 }
 
 .dual-range input[type="range"] {
   position: absolute;
-  left: 0;
-  top: 0;
+  inset: 0;
   z-index: 1;
   width: 100%;
-  height: 22px;
+  height: 100%;
   margin: 0;
   background: transparent;
   pointer-events: none;
@@ -1194,62 +1309,118 @@ video.hero-media {
 }
 
 .dual-range input[type="range"]::-webkit-slider-runnable-track {
-  height: 22px;
+  height: 100%;
   background: transparent;
 }
 
 .dual-range input[type="range"]::-moz-range-track {
+  height: 100%;
   background: transparent;
 }
 
 .dual-range input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
-  width: 14px;
-  height: 14px;
-  margin-top: 4px;
-  background: var(--accent);
-  border: 2px solid var(--canvas);
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--text-muted);
+  width: var(--grip);
+  height: 34px;
+  background: var(--accent) linear-gradient(var(--accent-text), var(--accent-text)) center / 2px 14px no-repeat;
+  border: 0;
+  border-radius: 5px;
   pointer-events: auto;
-  cursor: grab;
+  cursor: ew-resize;
 }
 
 .dual-range input[type="range"]::-moz-range-thumb {
-  width: 10px;
-  height: 10px;
-  background: var(--accent);
-  border: 2px solid var(--canvas);
-  border-radius: 50%;
-  box-shadow: 0 0 0 1px var(--text-muted);
+  box-sizing: border-box;
+  width: var(--grip);
+  height: 34px;
+  background: var(--accent) linear-gradient(var(--accent-text), var(--accent-text)) center / 2px 14px no-repeat;
+  border: 0;
+  border-radius: 5px;
   pointer-events: auto;
-  cursor: grab;
+  cursor: ew-resize;
 }
 
-.trim-row {
+.dual-range input[type="range"]:focus-visible {
+  outline: none;
+}
+
+.dual-range input[type="range"]:focus-visible::-webkit-slider-thumb {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+.dual-range input[type="range"]:focus-visible::-moz-range-thumb {
+  outline: 2px solid var(--text);
+  outline-offset: 1px;
+}
+
+/* GIF settings card: trim toggle, clip range + times, frame rate/speed/size, size estimate. */
+.gif-part {
+  padding: var(--s3);
+  border-top: 1px solid var(--border);
+}
+
+.gif-part.hidden {
+  display: none;
+}
+
+.row-sub {
+  display: block;
+  margin-top: 1px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.clip-times {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s2);
+}
+
+.clip-cap {
+  display: block;
+  margin-bottom: 3px;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.clip-ctl {
   display: flex;
-  align-items: center;
   gap: 6px;
-  margin-top: var(--s1);
 }
 
-.trim-row input[type="text"] {
-  flex: 0 0 56px;
+.clip-ctl input[type="text"] {
+  flex: 1;
   min-width: 0;
   height: var(--control-h);
-  padding: 0 4px;
+  padding: 0 var(--s2);
   font-family: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
   font-size: var(--fs-xs);
-  text-align: center;
   color: var(--text);
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
 }
 
-.trim-row input[type="text"]:focus {
+.clip-ctl input[type="text"]:focus {
   outline: none;
   border-color: var(--text-muted);
+}
+
+.gif-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s2);
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.gif-foot #tw-gif-est {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
 }
 
 .mini-btn {
@@ -1745,7 +1916,7 @@ video.hero-media {
 
   select,
   .mini-btn,
-  .trim-row input[type="text"] {
+  .clip-ctl input[type="text"] {
     height: 40px;
   }
 
@@ -1802,6 +1973,7 @@ video.hero-media {
   }
 
   .queue > summary,
+  .fold > summary,
   .list-more {
     min-height: 44px;
   }
@@ -1809,13 +1981,27 @@ video.hero-media {
 
 /* ---------------------------------------------------------------- YouTube video preview */
 
+/* One card: thumbnail (full-bleed, duration badge) over the title and channel. */
+.yt-card {
+  overflow: hidden;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+}
+
+.yt-card:has(> .yt-hero.hidden):has(.yt-vtitle:empty):has(.yt-vchannel:empty) {
+  display: none;
+}
+
 .yt-hero {
   position: relative;
-  margin-bottom: var(--s2);
 }
 
 .yt-hero .hero {
   margin: 0;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 0;
 }
 
 .yt-duration {
@@ -1832,8 +2018,12 @@ video.hero-media {
 }
 
 .yt-caption {
-  margin: 0 0 var(--s3);
   min-width: 0;
+  padding: var(--s3);
+}
+
+.yt-caption:has(.yt-vtitle:empty):has(.yt-vchannel:empty) {
+  display: none;
 }
 
 .yt-vtitle {
@@ -2048,6 +2238,7 @@ video.hero-media {
 
 #settings-panel > .section:last-child {
   margin-bottom: var(--s4);
+  border-bottom: 0;
 }
 
 .mini-btn:disabled {

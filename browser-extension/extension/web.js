@@ -12,6 +12,7 @@
     count: $('web-count'), grid: $('web-grid'), subfolder: $('web-subfolder'),
     convert: $('web-convert'), convertRow: $('web-convert-row'),
     convertVideo: $('web-convert-video'), convertVideoRow: $('web-convert-video-row'),
+    videoHeight: $('web-video-height'), videoHeightRow: $('web-video-height-row'),
   };
   const IMAGE_LABELS = { png: 'PNG', jpg: 'JPG', webp: 'WebP', gif: 'GIF', bmp: 'BMP', tiff: 'TIFF', avif: 'AVIF' };
   const VIDEO_LABELS = { mp4: 'MP4', webm: 'WebM', mkv: 'MKV', mov: 'MOV', avi: 'AVI', gif: 'GIF' };
@@ -23,6 +24,7 @@
   function savePrefs() {
     browser.storage.local.set({
       webSubfolder: el.subfolder.checked, webMin: filter.min, webConvert: el.convert.value, webConvertVideo: el.convertVideo.value,
+      webVideoHeight: el.videoHeight.value,
     });
   }
 
@@ -97,6 +99,11 @@
     syncActions();
   }
 
+  // Resolution only applies together with a target format, so it is disabled for "Original format".
+  function syncVideoHeight() {
+    el.videoHeight.disabled = !el.convertVideo.value;
+  }
+
   // ------------------------------------------------------------- listeners
 
   el.kinds.addEventListener('click', (e) => {
@@ -127,7 +134,8 @@
   });
 
   el.subfolder.addEventListener('change', savePrefs);
-  [el.convert, el.convertVideo].forEach((select) => select.addEventListener('change', () => {
+  [el.convert, el.convertVideo, el.videoHeight].forEach((select) => select.addEventListener('change', () => {
+    syncVideoHeight();
     savePrefs();
     refreshOutput();
   }));
@@ -142,7 +150,10 @@
     el.convert.value = IMAGE_LABELS[stored.webConvert] ? stored.webConvert : '';
     el.convertVideo.value = VIDEO_LABELS[stored.webConvertVideo] ? stored.webConvertVideo : '';
     el.convertRow.classList.toggle('hidden', !page.items.some((item) => item.kind === 'image'));
+    el.videoHeight.value = [...el.videoHeight.options].some((o) => o.value === stored.webVideoHeight) ? stored.webVideoHeight : '';
     el.convertVideoRow.classList.toggle('hidden', !page.items.some(isVideoLike));
+    el.videoHeightRow.classList.toggle('hidden', !page.items.some(isVideoLike));
+    syncVideoHeight();
     el.min.replaceChildren(...MIN_SIZES.map(([px, text]) => {
       const opt = document.createElement('option');
       opt.value = px;
@@ -162,7 +173,7 @@
       const picked = chosen();
       const notes = [];
       if (el.convert.value && picked.some((item) => item.kind === 'image')) notes.push('Images are converted to ' + IMAGE_LABELS[el.convert.value] + '.');
-      if (el.convertVideo.value && picked.some(isVideoLike)) notes.push('Video is converted to ' + VIDEO_LABELS[el.convertVideo.value] + '.');
+      if (el.convertVideo.value && picked.some(isVideoLike)) notes.push('Video is converted to ' + VIDEO_LABELS[el.convertVideo.value] + (el.videoHeight.value ? ' at up to ' + el.videoHeight.value + 'p' : '') + '.');
       return {
         label: n + (n === 1 ? ' item' : ' items'),
         ext: '',
@@ -173,7 +184,7 @@
     accepts: (url) => HTTP_URL_RE.test(url) && !TWEET_URL_RE.test(url),
     hint: 'Open a web page to list its images, video and audio.',
     loadingText: 'Scanning page…',
-    load: () => Promise.all([loadPrefs(['webSubfolder', 'webMin', 'webConvert', 'webConvertVideo']), send({ type: 'scanPage', tabId: currentTabId })])
+    load: () => Promise.all([loadPrefs(['webSubfolder', 'webMin', 'webConvert', 'webConvertVideo', 'webVideoHeight']), send({ type: 'scanPage', tabId: currentTabId })])
       .then(([stored, data]) => {
         if (!data || !data.items || !data.items.length) {
           throw Object.assign(new Error('No media found on this page.'), {
@@ -187,7 +198,7 @@
       title: page.title,
       pageUrl: page.url,
       subfolder: el.subfolder.checked,
-      convert: { image: el.convert.value || null, video: el.convertVideo.value || null },
+      convert: { image: el.convert.value || null, video: el.convertVideo.value || null, height: Number(el.videoHeight.value) || null },
       items: chosen().map(({ url, kind }) => ({ url, kind })),
     }),
   };

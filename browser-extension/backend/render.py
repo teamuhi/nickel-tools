@@ -84,12 +84,16 @@ def h264_args(ffmpeg_location, width, height):
     return ['-c:v', 'mpeg4', '-q:v', '3']
 
 
-def to_gif(src, dest, fps, speed, width, start, end, on_progress, ffmpeg_location=None):
+def to_gif(src, dest, fps, speed, width, start, end, on_progress, ffmpeg_location=None, height=None):
     """Video -> GIF. `width` None keeps the source width (never upscales);
+    `height`, when given, caps the height instead (width follows);
     start/end in seconds (end None = to the end)."""
     start = max(0.0, start or 0.0)
     clip = (end - start) if end else None
-    scale = 'scale=w=%s:h=-2:flags=lanczos' % ("'min(%d,iw)'" % width if width else 'iw')
+    if height:
+        scale = "scale=w=-2:h='min(%d,ih)':flags=lanczos" % height
+    else:
+        scale = 'scale=w=%s:h=-2:flags=lanczos' % ("'min(%d,iw)'" % width if width else 'iw')
     graph = (
         '[0:v]setpts=PTS/%s,fps=%d,%s,split[a][b];'
         '[a]palettegen=stats_mode=diff[p];'

@@ -48,6 +48,7 @@ VIDEO_FORMATS = {
     'avi': ('avi', ('avi',)),
     'gif': ('gif', ()),
 }
+VIDEO_HEIGHTS = (2160, 1440, 1080, 720, 480, 360, 240)  # max output heights; never upscaled
 CHUNK = 1 << 16
 FILENAME_RE = re.compile(r'filename\*?=(?:UTF-8\'\')?"?([^";]+)"?', re.IGNORECASE)
 
@@ -144,37 +145,51 @@ def convert_image(path, target):
     return dest
 
 
-def convert_video(path, target, on_progress, ffmpeg_location=None):
+def convert_video(path, target, on_progress, ffmpeg_location=None, height=None):
     """Re-encodes/remuxes the video at `path` into `target` (a key of
-    VIDEO_FORMATS) next to it and removes the original. Returns the new path,
-    or `path` unchanged when it is already in that container. Raises
-    FfmpegError on failure (the half-written output is removed)."""
+    VIDEO_FORMATS) next to it and removes the original. `height` (one of
+    VIDEO_HEIGHTS) caps the output height without upscaling and forces a
+    re-encode. Returns the new path, or `path` unchanged when it is already in
+    that container and no resize is wanted. Raises FfmpegError on failure (the
+    half-written output is removed)."""
     ext, same = VIDEO_FORMATS[target]
     root, old_ext = os.path.splitext(path)
-    if old_ext.lower().lstrip('.') in same:
+    in_place = old_ext.lower().lstrip('.') in same
+    if in_place and not height:
         return path
-    dest = core.dedupe_path(root + '.' + ext)
+    # Resizing a file that is already in the target container: encode beside it, then swap.
+    dest = root + '.resized.' + ext if in_place else core.dedupe_path(root + '.' + ext)
+    # Even-sized frames; with `height` also capped (scale=-2 keeps the width even).
+    size = "scale=-2:'min(%d,trunc(ih/2)*2)'" % height if height else 'scale=trunc(iw/2)*2:trunc(ih/2)*2'
     try:
         if target == 'gif':
-            render.to_gif(path, dest, 15, 1, 480, 0, None, on_progress, ffmpeg_location)
+            render.to_gif(path, dest, 15, 1, 480, 0, None, on_progress, ffmpeg_location, height)
         else:
+            enc_w, enc_h = (round(height * 16 / 9), height) if height else (1920, 1080)
             if target == 'mkv':
-                args = ['-i', path, '-c', 'copy']  # Matroska takes any stream, so no re-encode
+                if height:
+                    args = ['-i', path, '-vf', size + ',format=yuv420p', *render.h264_args(ffmpeg_location, enc_w, enc_h), '-c:a', 'copy']
+                else:
+                    args = ['-i', path, '-c', 'copy']  # Matroska takes any stream, so no re-encode
             elif target == 'webm':
                 if not render.has_encoder('libvpx-vp9', ffmpeg_location):
                     raise errors.FfmpegError('this ffmpeg build has no VP9 encoder')
-                args = ['-i', path, '-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '4',
-                        '-c:a', 'libopus', '-b:a', '128k']
+                args = ['-i', path] + (['-vf', size] if height else []) + [
+                    '-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-row-mt', '1', '-deadline', 'good', '-cpu-used', '4',
+                    '-c:a', 'libopus', '-b:a', '128k']
             elif target == 'avi':
-                args = ['-i', path, '-c:v', 'mpeg4', '-q:v', '3', '-c:a', 'libmp3lame', '-q:a', '3']
+                args = ['-i', path] + (['-vf', size] if height else []) + ['-c:v', 'mpeg4', '-q:v', '3', '-c:a', 'libmp3lame', '-q:a', '3']
             else:  # mp4, mov: H.264 + AAC
-                args = ['-i', path, '-vf', 'scale=trunc(iw/2)*2:trunc(ih/2)*2,format=yuv420p', *render.h264_args(ffmpeg_location, 1920, 1080),
+                args = ['-i', path, '-vf', size + ',format=yuv420p', *render.h264_args(ffmpeg_location, enc_w, enc_h),
                         '-c:a', 'aac', '-b:a', '192k', '-movflags', '+faststart']
             render.run_ffmpeg(args + [dest], None, on_progress, 'converting', ffmpeg_location)
     except Exception:
         if os.path.exists(dest):
             os.remove(dest)
         raise
+    if in_place:
+        os.replace(dest, path)
+        return path
     os.remove(path)
     return dest
 
@@ -206,9 +221,10 @@ def _download_embed(item, target_dir, ffmpeg_location, on_overall):
 
 
 def run_web_download(items, page_url, on_progress, ffmpeg_location=None, download_dir=None, title=None, subfolder=False, convert=None):
-    """`convert` is {'image': <IMAGE_FORMATS key>, 'video': <VIDEO_FORMATS key>}
-    (either may be missing/None to keep the original); images and
-    videos/embeds are re-encoded after they download. A bare string is
+    """`convert` is {'image': <IMAGE_FORMATS key>, 'video': <VIDEO_FORMATS key>,
+    'height': <VIDEO_HEIGHTS value>} (any may be missing/None to keep the
+    original); images and videos/embeds are re-encoded after they download.
+    `height` only applies together with a video target. A bare string is
     treated as the image target."""
     convert = convert if isinstance(convert, dict) else {'image': convert}
     targets = {
@@ -216,6 +232,11 @@ def run_web_download(items, page_url, on_progress, ffmpeg_location=None, downloa
         'video': convert.get('video') if convert.get('video') in VIDEO_FORMATS else None,
         'embed': convert.get('video') if convert.get('video') in VIDEO_FORMATS else None,
     }
+    try:
+        height = int(convert.get('height') or 0)
+    except (TypeError, ValueError):
+        height = 0
+    height = height if height in VIDEO_HEIGHTS else None
     try:
         items = validate_items(items)
     except ValueError as e:
@@ -256,7 +277,7 @@ def run_web_download(items, page_url, on_progress, ffmpeg_location=None, downloa
                         path = convert_image(path, target)
                     else:
                         on_convert()
-                        path = convert_video(path, target, on_convert, ffmpeg_location)
+                        path = convert_video(path, target, on_convert, ffmpeg_location, height)
                 except Exception:
                     kept.append('%s to %s' % (before, target.upper()))
             saved.append(path)

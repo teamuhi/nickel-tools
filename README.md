@@ -31,14 +31,17 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
 - **Twitter/X media download**: save a tweet's photos, videos and GIFs as-is.
   Photos can be saved at Original, Large, Medium or Small size as PNG, JPG,
   WebP or GIF; videos can be saved at your chosen resolution or converted to
-  a GIF (with adjustable frame rate, speed and width).
+  a GIF (with adjustable frame rate, speed and width, and an optional
+  start/end clip).
 
 - **Twitter/X tweet card**: render a tweet as an image (or an MP4, for video
   and GIF tweets) in a light or dark card theme. You can toggle the profile
   name, @handle, date and verified badge, and choose the card's resolution.
 
 - **Web media download**: grab the video or audio from other web pages, in
-  the same formats as above, plus the images embedded in HTML pages.
+  the same formats as above, plus the images embedded in HTML pages. Video can
+  be converted to MP4, WebM, MKV, MOV, AVI or GIF, optionally capped at a chosen
+  resolution (2160p down to 240p, never upscaled).
 
   > **Disclaimer:** Web media download relies on [yt-dlp](https://github.com/yt-dlp/yt-dlp)
   > and on how each site serves its media, so it is only guaranteed to be
@@ -62,6 +65,10 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
 - **Download history**: Settings lists your recent downloads with the source,
   format and time. Each entry can show the file in its folder, reopen the
   page it came from, or be removed on its own.
+
+- **Loading spinner**: while a tab fetches the media info (YouTube, tweet or
+  page scan), a small spinner shows next to the loading message. It follows
+  the light/dark theme.
 
 ## How to Install <img src="browser-extension/extension/icons/icon-16.png">
 
@@ -130,7 +137,7 @@ what it does, how to install it, and how it works.
   or saves the setting afterwards, so it works even though the popup closes
   while the dialog has focus.
 - Many more settings: notifications and badge, theme (System/Light/Dark),
-  startup tab, remember last-used options, download history, host/yt-dlp versions and a reset button.
+  popup font (System default/Easy to read/Serif/Monospace), startup tab, remember last-used options, download history, host/yt-dlp versions and a reset button.
 - YouTube tab: pick the video container (MP4, MKV or WebM), with a default in
   Settings. WebM is limited to VP9/AV1 and falls back to MP4 if the video
   doesn't offer them.

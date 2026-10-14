@@ -574,7 +574,7 @@ def validate_twitter_request(url, options):
         'quality': int(_num(options.get('quality'), 0, 0, 4320)) or None,
         'photoSize': options.get('photoSize') if options.get('photoSize') in twitter.PHOTO_SIZES else 'orig',
         'photoFormat': options.get('photoFormat') if options.get('photoFormat') in PHOTO_FORMATS else 'png',
-        'gif': {'fps': int(_num(gif.get('fps'), 15, 5, 30)), 'speed': _num(gif.get('speed'), 1.0, 0.25, 4.0),
+        'gif': {'fps': int(_num(gif.get('fps'), 30, 5, 30)), 'speed': _num(gif.get('speed'), 1.0, 0.25, 4.0),
                 'width': width, 'start': start, 'end': end},
         'card': {'theme': 'dark' if card.get('theme') == 'dark' else 'light',
                  'showText': card.get('showText', True) is not False,

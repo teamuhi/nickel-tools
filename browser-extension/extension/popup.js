@@ -150,9 +150,13 @@ function fillError(el, err) {
   el.classList.remove('hidden');
 }
 
-function panelMessage(name, text) {
+// loading: show the spinner icon before the text (the panel is fetching media info).
+function panelMessage(name, text, loading) {
   const el = panels[name].el;
-  el.querySelector('.msg').textContent = text;
+  const msg = el.querySelector('.msg');
+  msg.textContent = text;
+  msg.classList.toggle('is-loading', !!loading);
+  msg.setAttribute('aria-busy', String(!!loading));
   el.querySelector('.error-box').classList.add('hidden');
 }
 
@@ -222,7 +226,7 @@ function loadPanel(name) {
     return;
   }
   panel.state = 'loading';
-  panelMessage(name, panel.loadingText);
+  panelMessage(name, panel.loadingText, true);
   panel.load(currentTabUrlValue)
     .then(() => {
       panel.state = 'ready';
@@ -391,7 +395,7 @@ const dirFields = {
 const SETTING_DEFAULTS = {
   showBadge: true, notifyStart: true, notifyFinish: true, notifyError: true, autoReveal: false,
   rememberOptions: true, useXLogin: true,
-  theme: 'system', defaultTab: 'auto',
+  theme: 'system', font: 'system', defaultTab: 'auto',
 };
 const settingInputs = [...document.querySelectorAll('[data-setting]')];
 const containerSeg = $('set-container');
@@ -513,6 +517,7 @@ settingInputs.forEach((input) => {
     let value = input.type === 'checkbox' ? input.checked : input.value;
     browser.storage.local.set({ [key]: value });
     if (key === 'theme') applyThemePref(value);
+    if (key === 'font') applyFontPref(value);
   });
 });
 
@@ -584,6 +589,21 @@ $('clear-history').addEventListener('click', () => {
 
 $('history-more').addEventListener('click', () => renderHistory(historyEntries, !historyExpanded));
 
+// Expand all / Collapse all for the settings dropdowns; the label follows the sections' state.
+const foldAllBtn = $('fold-all');
+const folds = [...settingsPanel.querySelectorAll('details.fold')];
+
+function syncFoldAll() {
+  foldAllBtn.textContent = folds.every((d) => d.open) ? 'Collapse all' : 'Expand all';
+}
+
+foldAllBtn.addEventListener('click', () => {
+  const open = !folds.every((d) => d.open);
+  folds.forEach((d) => { d.open = open; });
+  syncFoldAll();
+});
+folds.forEach((d) => d.addEventListener('toggle', syncFoldAll));
+
 // Two clicks, so a stray one can't wipe the settings.
 const resetBtn = $('reset-settings');
 let resetTimer = null;
@@ -603,6 +623,7 @@ resetBtn.addEventListener('click', () => {
     .then(() => send({ type: 'setConfig', config: { downloadDir: '', twitterDownloadDir: '', webDownloadDir: '' } }))
     .then(() => {
       applyThemePref('system');
+      applyFontPref('system');
       loadSettings();
       flashSettingsStatus('Settings reset');
     })
@@ -650,6 +671,14 @@ themeToggleBtn.addEventListener('click', () => {
   browser.storage.local.set({ theme: next });
 });
 
+// ------------------------------------------------------------------- font
+
+// 'system' removes the attribute, so the stack in popup.css's :root applies.
+function applyFontPref(pref) {
+  if (!pref || pref === 'system') document.documentElement.removeAttribute('data-font');
+  else document.documentElement.setAttribute('data-font', pref);
+}
+
 // ------------------------------------------------------------------- init
 
 // "Open on tab" setting; Auto opens a tweet link on the Twitter tab, anything else on YouTube.
@@ -659,8 +688,11 @@ function startTab(url, pref) {
 }
 
 function init() {
-  const stored = browser.storage.local.get(['theme', 'defaultTab']);
-  stored.then((s) => applyThemePref(s.theme || 'system'));
+  const stored = browser.storage.local.get(['theme', 'font', 'defaultTab']);
+  stored.then((s) => {
+    applyThemePref(s.theme || 'system');
+    applyFontPref(s.font);
+  });
 
   Promise.all([stored, currentTab()]).then(async ([s, tab]) => {
     const url = tab.url;

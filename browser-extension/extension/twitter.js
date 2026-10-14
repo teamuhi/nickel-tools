@@ -18,6 +18,7 @@
     strip: $('tw-strip'), title: $('tw-title'),
     kind: $('tw-kind'), mediaOpts: $('tw-media-opts'), cardOpts: $('tw-card-opts'),
     formats: $('tw-formats'), quality: $('tw-quality'), gifEst: $('tw-gif-est'), gifOpts: $('tw-gif-opts'),
+    clipOn: $('tw-clip-on'), clipRow: $('tw-clip-row'), clipLen: $('tw-clip-len'),
     fps: $('tw-fps'), speed: $('tw-speed'), width: $('tw-width'),
     preview: $('tw-preview'), trim: $('tw-trim'), range: $('tw-range'),
     start: $('tw-start'), end: $('tw-end'), startT: $('tw-start-t'), endT: $('tw-end-t'),
@@ -41,9 +42,12 @@
   let translating = 0; // sequence number of the in-flight translate request, 0 when idle
   let translateSeq = 0;
   let trim = { start: 0, end: 0 };
+  let duration = 0; // seconds of the selected video; 0 = unknown, so no trimming is offered
 
   const currentItem = () => (tweet && tweet.media[selected]) || null;
   const isVideo = (item) => item && item.type !== 'photo';
+  // The range the GIF is cut from: the chosen clip while "Trim clip" is on, else the whole video.
+  const clip = () => (el.clipOn.checked && duration ? trim : { start: 0, end: duration });
   const format = () => document.querySelector('input[name="twfmt"]:checked').value;
 
   function savePrefs() {
@@ -94,26 +98,40 @@
 
   function updateGifEstimate() {
     const item = currentItem();
-    if (!isVideo(item) || !item.width || trim.end <= trim.start) {
-      el.gifEst.textContent = '';
+    const { start, end } = clip();
+    if (!isVideo(item) || !item.width || end <= start) {
+      el.gifEst.textContent = '–';
       return;
     }
     const width = Number(el.width.value) || item.width;
     const height = Math.round(width * item.height / item.width);
-    const seconds = (trim.end - trim.start) / Number(el.speed.value);
+    const seconds = (end - start) / Number(el.speed.value);
     const bytes = width * height * Number(el.fps.value) * seconds * GIF_BYTES_PER_PIXEL_FRAME;
-    el.gifEst.textContent = width + '×' + height + ' · ~' + formatBytes(bytes);
+    el.gifEst.textContent = width + '×' + height + ' · ~' + formatBytes(bytes) + ' · ' + seconds.toFixed(1) + ' s';
   }
 
   function updateTrimUI() {
     const max = Number(el.end.max) || 1;
-    el.range.style.setProperty('--lo', (trim.start / max * 100) + '%');
-    el.range.style.setProperty('--hi', (trim.end / max * 100) + '%');
+    el.range.style.setProperty('--lo-f', trim.start / max);
+    el.range.style.setProperty('--hi-f', trim.end / max);
     el.start.value = trim.start;
     el.end.value = trim.end;
     el.startT.value = formatTime(trim.start);
     el.endT.value = formatTime(trim.end);
+    el.clipLen.textContent = el.clipOn.checked
+      ? formatTime(trim.start) + ' → ' + formatTime(trim.end) + ' · ' + (trim.end - trim.start).toFixed(1) + ' s'
+      : duration ? 'Whole video · ' + formatTime(duration) : 'Whole video';
     updateGifEstimate();
+  }
+
+  // Sets the selected video's length: sizes the range, resets the clip and shows or hides the trim controls.
+  function setDuration(seconds) {
+    duration = seconds > 0 ? seconds : 0;
+    el.end.max = el.start.max = duration || 1;
+    el.clipRow.classList.toggle('hidden', !duration);
+    el.trim.classList.toggle('hidden', !duration || !el.clipOn.checked);
+    trim = { start: 0, end: duration };
+    updateTrimUI();
   }
 
   // Keeps start < end by at least MIN_CLIP, moving whichever thumb was not touched last.
@@ -418,13 +436,10 @@
       const widths = WIDTH_OPTIONS.filter((w) => !item.width || w < item.width);
       fillSelect(el.width, ['', ...widths], (w) => (w ? w + ' px' : 'Original'), widths.includes(480) ? 480 : '');
 
-      const duration = item.duration || 0;
-      el.end.max = el.start.max = duration || 1;
-      el.trim.classList.toggle('hidden', !duration);
+      el.clipOn.checked = false;
+      setDuration(item.duration || 0);
       el.preview.poster = item.thumbnail || '';
       if (item.previewUrl) el.preview.src = item.previewUrl; else el.preview.removeAttribute('src');
-      trim = { start: 0, end: duration };
-      updateTrimUI();
 
       document.querySelector('input[name="twfmt"][value="' + (item.type === 'animated_gif' ? 'gif' : 'mp4') + '"]').checked = true;
     }
@@ -459,7 +474,7 @@
     fillTranslateOptions();
     setTranslateStatus('');
 
-    fillSelect(el.fps, FPS_OPTIONS, (v) => v + ' fps', 15);
+    fillSelect(el.fps, FPS_OPTIONS, (v) => v + ' fps', 30);
     fillSelect(el.speed, SPEED_OPTIONS, (v) => v + '×', 1);
     buildStrip();
     selectMedia(0);
@@ -531,14 +546,24 @@
     const t = parseTime(el.endT.value);
     setTrim(trim.start, t == null ? trim.end : t, 'end');
   });
-  $('tw-start-now').addEventListener('click', () => setTrim(el.preview.currentTime, trim.end, 'start'));
-  $('tw-end-now').addEventListener('click', () => setTrim(trim.start, el.preview.currentTime, 'end'));
+
+  el.clipOn.addEventListener('change', () => {
+    el.trim.classList.toggle('hidden', !el.clipOn.checked);
+    updateTrimUI();
+    if (el.preview.src) el.preview.currentTime = clip().start;
+  });
+
+  // The tweet data sometimes has no duration; the preview knows it once its metadata loads.
+  el.preview.addEventListener('loadedmetadata', () => {
+    if (!duration && isFinite(el.preview.duration)) setDuration(Math.round(el.preview.duration * 10) / 10);
+  });
 
   // Loop the preview inside the chosen clip.
   el.preview.addEventListener('timeupdate', () => {
-    if (!trim.end) return;
-    if (el.preview.currentTime >= trim.end || el.preview.currentTime < trim.start - 0.25) {
-      el.preview.currentTime = trim.start;
+    const { start, end } = clip();
+    if (!end) return;
+    if (el.preview.currentTime >= end || el.preview.currentTime < start - 0.25) {
+      el.preview.currentTime = start;
     }
   });
 
@@ -586,8 +611,8 @@
             fps: Number(el.fps.value),
             speed: Number(el.speed.value),
             width: Number(el.width.value) || null,
-            start: trim.start,
-            end: trim.end || null,
+            start: clip().start,
+            end: clip().end || null,
           },
           card: Object.assign({}, card, { scale: cardScale(), translation: cardTranslation() }),
         },

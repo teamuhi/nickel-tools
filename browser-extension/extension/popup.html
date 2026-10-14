@@ -46,8 +46,12 @@
     </header>
 
     <div id="settings-panel" class="hidden">
-      <div class="section">
-        <div class="section-label">Save locations</div>
+      <div class="fold-bar">
+        <div id="settings-status" class="hint" role="status" aria-live="polite"></div>
+        <button id="fold-all" class="mini-btn mini-btn-fit" type="button">Expand all</button>
+      </div>
+      <details class="section fold">
+        <summary class="section-label">Save locations</summary>
         <label class="field-label" for="download-dir">YouTube</label>
         <div class="dir-row">
           <div class="field"><input type="text" id="download-dir" placeholder="C:\Users\you\Downloads\nickel-tools"></div>
@@ -66,10 +70,10 @@
           <button id="browse-web-dir" class="btn-secondary" type="button">Browse…</button>
           <button class="btn-secondary btn-square" type="button" data-open="web" title="Open folder" aria-label="Open Web folder"><svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.2 1.5h6.6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg></button>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">YouTube</div>
+      <details class="section fold">
+        <summary class="section-label">YouTube</summary>
         <div class="group">
           <div class="row">
             <span class="row-label">Default video format</span>
@@ -80,10 +84,10 @@
             </div>
           </div>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">Notifications &amp; badge</div>
+      <details class="section fold">
+        <summary class="section-label">Notifications &amp; badge</summary>
         <div class="group">
           <label class="row" for="set-showBadge">
             <span class="row-text">Show export progress on the toolbar icon</span>
@@ -106,14 +110,18 @@
             <input type="checkbox" id="set-autoReveal" class="switch" data-setting="autoReveal">
           </label>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">Appearance &amp; startup</div>
+      <details class="section fold">
+        <summary class="section-label">Appearance &amp; startup</summary>
         <div class="group">
           <div class="row">
             <span class="row-label">Theme</span>
             <select id="set-theme" data-setting="theme" aria-label="Theme"><option value="system">System</option><option value="light">Light</option><option value="dark">Dark</option></select>
+          </div>
+          <div class="row">
+            <span class="row-label">Font</span>
+            <select id="set-font" data-setting="font" aria-label="Font"><option value="system">System default</option><option value="humanist">Easy to read (Verdana)</option><option value="serif">Serif</option><option value="mono">Monospace</option></select>
           </div>
           <div class="row">
             <span class="row-label">Open on tab</span>
@@ -124,20 +132,20 @@
             <input type="checkbox" id="set-rememberOptions" class="switch" data-setting="rememberOptions">
           </label>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">X account</div>
+      <details class="section fold">
+        <summary class="section-label">X account</summary>
         <div class="group">
           <label class="row" for="set-useXLogin">
             <span class="row-text">Use my x.com login for sensitive or protected tweets</span>
             <input type="checkbox" id="set-useXLogin" class="switch" data-setting="useXLogin">
           </label>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">History</div>
+      <details class="section fold">
+        <summary class="section-label">History</summary>
         <div id="history-wrap" class="group">
           <div class="row">
             <span id="history-title" class="row-label">Recent downloads</span>
@@ -146,10 +154,10 @@
           <div id="history-list" class="list"></div>
           <button id="history-more" class="list-more hidden" type="button"></button>
         </div>
-      </div>
+      </details>
 
-      <div class="section">
-        <div class="section-label">Maintenance</div>
+      <details class="section fold">
+        <summary class="section-label">Maintenance</summary>
         <div class="group">
           <div class="row">
             <span class="row-label">Reset all settings</span>
@@ -158,12 +166,12 @@
         </div>
         <div id="about-info" class="hint settings-foot"></div>
         <div id="ytdlp-info" class="hint"></div>
-      </div>
+      </details>
     </div>
 
     <div id="main">
       <section id="yt-panel" class="panel" role="tabpanel">
-        <div class="msg">Loading…</div>
+        <div class="msg is-loading" aria-busy="true">Loading…</div>
         <div class="error-box hidden"></div>
         <div class="host-note hidden">Native host is out of date, so some features are unavailable. Reinstall nickel.tools to update it.</div>
         <div id="video-info" class="hidden">
@@ -173,21 +181,21 @@
           </div>
 
           <div id="yt-video">
-            <div id="yt-hero" class="yt-hero hidden">
-              <img id="thumb" class="hero hero-media" alt="">
-              <span id="yt-duration" class="yt-duration hidden"></span>
-            </div>
-            <div class="yt-caption">
-              <div id="yt-vtitle" class="yt-vtitle"></div>
-              <div id="yt-vchannel" class="yt-vchannel"></div>
+            <div class="yt-card">
+              <div id="yt-hero" class="yt-hero hidden">
+                <img id="thumb" class="hero hero-media" alt="">
+                <span id="yt-duration" class="yt-duration hidden"></span>
+              </div>
+              <div class="yt-caption">
+                <div id="yt-vtitle" class="yt-vtitle"></div>
+                <div id="yt-vchannel" class="yt-vchannel"></div>
+              </div>
             </div>
             <div class="group">
               <div class="row">
                 <span class="row-label">Resolution</span>
                 <select id="mp4-quality" aria-label="Video resolution"></select>
               </div>
-            </div>
-            <div class="group">
               <div class="row">
                 <span class="row-label">Format</span>
                 <div id="yt-container" class="seg seg-sm" role="tablist" aria-label="Video format">
@@ -196,8 +204,6 @@
                   <button type="button" role="tab" data-container="webm" aria-selected="false">WebM</button>
                 </div>
               </div>
-            </div>
-            <div class="group">
               <div class="row">
                 <span class="row-label">Preferred codec</span>
                 <select id="video-codec" aria-label="Video codec"></select>
@@ -317,27 +323,41 @@
             </div>
             <div id="tw-gif-opts" class="hidden">
               <div class="section">
-                <div class="section-head">
-                  <span class="section-label">GIF settings</span>
-                  <span class="hint" id="tw-gif-est"></span>
-                </div>
-                <div class="opt-grid">
-                  <label>Frame rate<select id="tw-fps"></select></label>
-                  <label>Speed<select id="tw-speed"></select></label>
-                  <label>Resolution<select id="tw-width"></select></label>
-                </div>
-              </div>
-              <div class="section" id="tw-trim">
-                <div class="section-label">Clip</div>
-                <div class="dual-range" id="tw-range">
-                  <input type="range" id="tw-start" min="0" max="1" step="0.1" value="0" aria-label="Start time">
-                  <input type="range" id="tw-end" min="0" max="1" step="0.1" value="1" aria-label="End time">
-                </div>
-                <div class="trim-row">
-                  <input type="text" id="tw-start-t" value="0:00.0" aria-label="Start time">
-                  <button type="button" id="tw-start-now" class="mini-btn" title="Use the preview's current time as the start">Set start</button>
-                  <button type="button" id="tw-end-now" class="mini-btn" title="Use the preview's current time as the end">Set end</button>
-                  <input type="text" id="tw-end-t" value="0:00.0" aria-label="End time">
+                <div class="section-label">GIF settings</div>
+                <div class="group gif-card">
+                  <label class="row" id="tw-clip-row" for="tw-clip-on">
+                    <span class="row-text">Trim clip<span class="row-sub" id="tw-clip-len">Whole video</span></span>
+                    <input type="checkbox" id="tw-clip-on" class="switch">
+                  </label>
+                  <div id="tw-trim" class="gif-part hidden">
+                    <div class="dual-range" id="tw-range">
+                      <input type="range" id="tw-start" min="0" max="1" step="0.1" value="0" aria-label="Start time">
+                      <input type="range" id="tw-end" min="0" max="1" step="0.1" value="1" aria-label="End time">
+                    </div>
+                    <div class="clip-times">
+                      <div class="clip-time">
+                        <label class="clip-cap" for="tw-start-t">Start</label>
+                        <div class="clip-ctl">
+                          <input type="text" id="tw-start-t" value="0:00.0" inputmode="decimal" autocomplete="off">
+                        </div>
+                      </div>
+                      <div class="clip-time">
+                        <label class="clip-cap" for="tw-end-t">End</label>
+                        <div class="clip-ctl">
+                          <input type="text" id="tw-end-t" value="0:00.0" inputmode="decimal" autocomplete="off">
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="gif-part opt-grid">
+                    <label>Frame rate<select id="tw-fps"></select></label>
+                    <label>Speed<select id="tw-speed"></select></label>
+                    <label>Resolution<select id="tw-width"></select></label>
+                  </div>
+                  <div class="gif-part gif-foot">
+                    <span>Estimated GIF</span>
+                    <span id="tw-gif-est">–</span>
+                  </div>
                 </div>
               </div>
             </div>
@@ -443,6 +463,19 @@
                 <option value="mov">MOV</option>
                 <option value="avi">AVI</option>
                 <option value="gif">GIF (animated)</option>
+              </select>
+            </div>
+            <div class="row" id="web-video-height-row">
+              <span class="row-label">Video resolution</span>
+              <select id="web-video-height" aria-label="Video resolution">
+                <option value="">Original resolution</option>
+                <option value="2160">2160p (4K)</option>
+                <option value="1440">1440p</option>
+                <option value="1080">1080p</option>
+                <option value="720">720p</option>
+                <option value="480">480p</option>
+                <option value="360">360p</option>
+                <option value="240">240p</option>
               </select>
             </div>
             <label class="row" for="web-subfolder">

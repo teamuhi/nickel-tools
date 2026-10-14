@@ -167,7 +167,7 @@ a path into the browser's path box and confirm it.
 
 ### Settings
 
-The gear icon opens the settings:
+The gear icon opens the settings. Each category (Save locations, YouTube, Notifications & badge, Appearance & startup, X account, History, Maintenance) is a dropdown: click its heading to expand or collapse it, or use the **Expand all / Collapse all** button at the top.
 
 - **Save locations** per tab, each with Browse and Open buttons. Browsing or typing a path (Enter or leaving the field) saves it right away; there is no Save button.
 - **YouTube**: default video format (MP4, MKV or WebM). The same choice is on
@@ -175,7 +175,8 @@ The gear icon opens the settings:
   MP4 when the video has neither.
 - **Notifications & badge**: progress on the toolbar icon, notify on start,
   finish and failure, and show the finished file in its folder.
-- **Appearance & startup**: theme (System, Light or Dark), which tab opens
+- **Appearance & startup**: theme (System, Light or Dark), the popup font
+  (System default, Easy to read, Serif or Monospace), which tab opens
   first, and whether your last-used options are remembered.
 - **X account**: use your x.com login for sensitive or protected tweets.
 - **History**: the last 20 downloads (5 shown, **Show all** for the rest) with
@@ -203,8 +204,10 @@ items shows a thumbnail strip to pick which one to download.
   resolution; sizes X doesn't serve, such as 480p, are downscaled with ffmpeg
   and marked "scaled"), a photo at Original, Large, Medium or Small size, saved as **PNG (default), JPG, WebP or GIF** (Image format row; transparency is flattened onto white for JPG), or a
   video/GIF **converted to a GIF**. For GIF you can set the frame rate, speed, resolution (width),
-  and start/end points. A looping preview plays the chosen clip, and the
-  **Set start** / **Set end** buttons take the preview's current time.
+  and an optional clip: switch on **Trim clip** to choose start/end points
+  with the timeline handles or the time boxes (leave it off to convert the whole
+  video). A looping preview plays the chosen clip, and the card shows the
+  estimated GIF size and length. The default frame rate is 30 fps.
 - **Tweet card** renders the tweet like a card: profile picture, name, @handle,
   and (each with its own checkbox) the tweet text, date/time and verified
   badge, in a **light or dark card theme** (independent of the popup's
