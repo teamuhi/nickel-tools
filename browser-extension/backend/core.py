@@ -72,6 +72,13 @@ def save_config(config):
 CONFIG_DIR_KEYS = {'youtube': 'download_dir', 'twitter': 'twitter_download_dir', 'web': 'web_download_dir'}
 
 
+def get_dir_override(source='youtube'):
+    """The location explicitly saved for `source`, or '' when it is unset (and
+    so follows the YouTube one). Used by the settings UI so an inherited path
+    isn't shown as if it had been set for that category."""
+    return load_config().get(CONFIG_DIR_KEYS.get(source)) or ''
+
+
 def get_download_dir(source='youtube'):
     """Save location for `source` ('youtube', 'twitter' or 'web'). An unset
     Twitter/Web location follows the general one, so existing setups keep working."""

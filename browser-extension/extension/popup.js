@@ -7,6 +7,8 @@ const TWEET_URL_RE = /^https?:\/\/(?:[\w-]+\.)?(?:x|twitter)\.com\/(?:[^/?#]+|i\
 
 const X_HOST_RE = /^https?:\/\/(?:[\w-]+\.)?(?:x|twitter)\.com\//i;
 
+const ACTION_LOCK_MS = 600;
+
 const $ = (id) => document.getElementById(id);
 
 const downloadBtn = $('download');
@@ -20,7 +22,9 @@ const jobErrorEl = $('job-error');
 let currentTabUrlValue = null;
 let currentTabId = null;
 let activeTab = 'youtube';
-let lastJob = null;
+let lastJob = null; // the newest job of the current tab
+let queue = []; // running + waiting jobs across all tabs: [{ id, title, source, mode, status, percent, tabUrl }]
+let actionsLocked = false; // briefly set after a click, against double-clicks
 
 // name -> { el, accepts(url), hint, loadingText, load(url) -> Promise, payload() -> {...},
 //           state: undefined | 'loading' | 'ready' | 'error' | 'unsupported' }
@@ -93,6 +97,44 @@ function textNode(tag, className, text) {
   return node;
 }
 
+const SOURCE_TILES = { youtube: 'YT', twitter: 'X', web: 'WEB' };
+
+// Constant markup only (never page text), so innerHTML is safe here.
+const ICONS = {
+  folder: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.2 1.5h6.6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg>',
+  page: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>',
+  remove: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+};
+
+function iconButton(icon, label, onClick, disabled) {
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.className = 'icon-mini';
+  btn.title = label;
+  btn.setAttribute('aria-label', label);
+  btn.innerHTML = ICONS[icon];
+  btn.disabled = !!disabled;
+  btn.addEventListener('click', onClick);
+  return btn;
+}
+
+// One row of the queue and history lists: source tile, title, muted meta line
+// and icon buttons. Titles come from pages, so everything is set via textContent.
+function listItem({ source, title, meta, actions = [] }) {
+  const item = document.createElement('div');
+  item.className = 'list-item';
+  const text = document.createElement('div');
+  text.className = 'li-text';
+  const titleEl = textNode('div', 'li-title', title);
+  titleEl.title = title;
+  text.append(titleEl, textNode('div', 'li-meta', meta));
+  const buttons = document.createElement('div');
+  buttons.className = 'li-actions';
+  buttons.append(...actions);
+  item.append(textNode('span', 'src-tile', SOURCE_TILES[source] || SOURCE_TILES.youtube), text, buttons);
+  return item;
+}
+
 // err: { code, message, hint, detail }. Built with textContent only, since
 // message/detail can echo page or server text.
 function fillError(el, err) {
@@ -140,19 +182,32 @@ function noteYtdlp(info) {
 function refreshOutput() {
   const panel = panels[activeTab];
   const out = panel && panel.state === 'ready' && panel.output ? panel.output() : null;
-  $('download-label').textContent = out ? 'Download ' + out.label : 'Download';
-  $('action-hint').textContent = out && out.hint ? out.hint : '';
+  // With downloads ahead, a new one is queued behind them.
+  const verb = queue.length ? 'Queue' : 'Download';
+  $('download-label').textContent = out ? verb + ' ' + out.label : verb;
+  $('action-hint').textContent = queue.length
+    ? 'Starts after ' + queue.length + (queue.length === 1 ? ' download' : ' downloads') + ' ahead'
+    : (out && out.hint ? out.hint : '');
   if (panel && panel.extEl) panel.extEl.textContent = out ? out.ext : '';
 }
 
+// A running job no longer blocks the buttons: another click just queues behind it.
 function syncActions() {
   const panel = panels[activeTab];
   actionsEl.classList.toggle('hidden', panel.state !== 'ready');
-  const busy = lastJob && lastJob.status !== 'finished' && lastJob.status !== 'error';
-  const blocked = !!busy || (panel.canDownload && !panel.canDownload());
+  const blocked = actionsLocked || (panel.canDownload && !panel.canDownload());
   downloadBtn.disabled = blocked;
   downloadToBtn.disabled = blocked;
   refreshOutput();
+}
+
+function lockActions() {
+  actionsLocked = true;
+  syncActions();
+  setTimeout(() => {
+    actionsLocked = false;
+    syncActions();
+  }, ACTION_LOCK_MS);
 }
 
 const WEB_FALLBACK_CODES = ['E_UNSUPPORTED_URL', 'E_NO_MEDIA', 'E_EXTRACTOR_BROKEN', 'E_UNKNOWN'];
@@ -213,7 +268,10 @@ function renderJob(job) {
 
   const percent = job.percent || 0;
   progressBar.style.transform = 'scaleX(' + (percent / 100) + ')';
-  if (job.status === 'starting') {
+  if (job.status === 'queued') {
+    const place = queue.filter((j) => j.status === 'queued').findIndex((j) => j.id === job.id) + 1;
+    progressText.textContent = 'Queued' + (place ? ' · #' + place + ' in line' : '…');
+  } else if (job.status === 'starting') {
     progressText.textContent = 'Starting…';
   } else if (job.status === 'downloading') {
     progressText.textContent = 'Downloading' + (job.total > 1 ? ' ' + job.item + ' of ' + job.total : '') + '… ' + percent + '%';
@@ -237,10 +295,48 @@ function renderJob(job) {
   }
 }
 
+const STATUS_LABELS = { starting: 'Starting', downloading: 'Downloading', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+
+function queueItem(job) {
+  const waiting = job.status === 'queued';
+  const actions = waiting
+    ? [iconButton('remove', 'Remove from queue', () => send({ type: 'removeQueued', id: job.id }).then(refreshJobState).catch(() => {}))]
+    : [];
+  return listItem({
+    source: job.source,
+    title: job.title || 'Download',
+    meta: waiting ? 'Waiting' : (STATUS_LABELS[job.status] || 'Working') + (job.status === 'starting' ? '' : ' · ' + Math.round(job.percent || 0) + '%'),
+    actions,
+  });
+}
+
+// Collapsible list in the footer; hidden while nothing is queued or running.
+function renderQueue() {
+  const running = queue.filter((job) => job.status !== 'queued').length;
+  const waiting = queue.length - running;
+  $('queue').classList.toggle('hidden', !queue.length);
+  $('queue-summary').textContent = 'Queue · ' + [running && running + ' running', waiting && waiting + ' waiting'].filter(Boolean).join(', ');
+  $('queue-list').replaceChildren(...queue.map(queueItem));
+}
+
+// The background replies { job, queue }; a stale copy still running after an
+// update replies with just the job.
+const readJobState = (res) => (res && Array.isArray(res.queue) ? res : { job: res || null, queue: [] });
+
+function applyJobState(res, forThisTab = true) {
+  const state = readJobState(res);
+  queue = state.queue;
+  renderQueue();
+  if (forThisTab) renderJob(state.job);
+  else syncActions();
+}
+
+function refreshJobState() {
+  return send({ type: 'getJob', tabUrl: currentTabUrlValue }).then((res) => applyJobState(res)).catch(syncActions);
+}
+
 browser.runtime.onMessage.addListener((message) => {
-  if (message.type === 'jobUpdate' && message.tabUrl === currentTabUrlValue) {
-    renderJob(message.job);
-  }
+  if (message.type === 'jobUpdate') applyJobState(message, message.tabUrl === currentTabUrlValue);
 });
 
 function buildPayload(type) {
@@ -249,18 +345,21 @@ function buildPayload(type) {
 }
 
 // `extra` merges into the request, e.g. { downloadDir } for a one-off folder.
+// The background queues the job (or ignores an exact repeat), then we resync.
 function startDownload(extra) {
-  renderJob({ status: 'starting', percent: 0, source: activeTab });
-  send(Object.assign(buildPayload('startDownload'), extra)).catch((err) => renderJob({ status: 'error', error: err.message, source: activeTab }));
+  lockActions();
+  send(Object.assign(buildPayload('startDownload'), extra))
+    .then(refreshJobState)
+    .catch((err) => renderJob({ status: 'error', error: err.message, source: activeTab }));
 }
 
 // The folder dialog steals focus, which closes the popup, so the background
-// script owns the whole sequence (pick a folder, then start the job). If the
+// script owns the whole sequence (pick a folder, then queue the job). If the
 // popup is still open afterwards it just follows the job's updates.
 function startDownloadTo() {
   downloadToBtn.disabled = true;
   send(buildPayload('startDownloadTo'))
-    .then(() => syncActions())
+    .then(refreshJobState)
     .catch((err) => {
       syncActions();
       renderJob({ status: 'error', error: 'Could not start the download: ' + err.message, source: activeTab });
@@ -275,7 +374,6 @@ downloadToBtn.addEventListener('click', startDownloadTo);
 const settingsToggleBtn = $('settings-toggle');
 const settingsPanel = $('settings-panel');
 const mainEl = $('main');
-const saveSettingsBtn = $('save-settings');
 const settingsStatusEl = $('settings-status');
 
 // One save location per tab. `key` is the field name in the host's config
@@ -312,16 +410,11 @@ function isDirDirty(field) {
   return field.input.value.trim() !== field.loaded;
 }
 
-function updateSaveButtonState() {
-  saveSettingsBtn.disabled = !Object.values(dirFields).some(isDirDirty);
-}
-
 function applyConfig(res) {
   for (const field of Object.values(dirFields)) {
     field.loaded = res[field.key] || '';
     field.input.value = field.loaded;
   }
-  updateSaveButtonState();
 }
 
 function renderSettingValues(stored) {
@@ -335,21 +428,47 @@ function renderSettingValues(stored) {
   containerSeg.querySelectorAll('[data-container]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.container === container)));
 }
 
-function renderHistory(history) {
-  const list = (history || []).slice(0, HISTORY_SHOWN);
-  $('history-wrap').classList.toggle('hidden', !list.length);
-  $('history-list').replaceChildren(...list.map((entry) => {
-    const row = document.createElement('div');
-    row.className = 'row';
-    const title = textNode('span', 'row-text hist-title', entry.title || entry.filename || 'Saved');
-    title.title = entry.path || '';
-    const show = textNode('button', 'mini-btn mini-btn-fit', 'Show');
-    show.type = 'button';
-    show.disabled = !entry.path;
-    show.addEventListener('click', () => send({ type: 'revealFile', path: entry.path }).catch((err) => flashSettingsStatus('Error: ' + err.message)));
-    row.append(title, show);
-    return row;
+const relativeTime = new Intl.RelativeTimeFormat(undefined, { numeric: 'auto' });
+const TIME_UNITS = [['day', 86400], ['hour', 3600], ['minute', 60]];
+
+// "5 minutes ago", "yesterday", "now".
+function timeAgo(at) {
+  const seconds = Math.round((at - Date.now()) / 1000);
+  const [unit, size] = TIME_UNITS.find(([, s]) => Math.abs(seconds) >= s) || ['second', 1];
+  return relativeTime.format(unit === 'second' ? 0 : Math.round(seconds / size), unit);
+}
+
+let historyEntries = [];
+let historyExpanded = false;
+
+function historyItem(entry, index) {
+  const ext = /\.([A-Za-z0-9]{1,5})$/.exec(entry.filename || '');
+  const actions = [iconButton('folder', 'Show in folder', () => send({ type: 'revealFile', path: entry.path }).catch((err) => flashSettingsStatus('Error: ' + err.message)), !entry.path)];
+  // Entries saved by older versions have no page URL.
+  if (HTTP_URL_RE.test(entry.url || '')) actions.push(iconButton('page', 'Open the source page', () => browser.tabs.create({ url: entry.url })));
+  actions.push(iconButton('remove', 'Remove from history', () => {
+    historyEntries.splice(index, 1);
+    browser.storage.local.set({ history: historyEntries }).then(() => renderHistory(historyEntries, historyExpanded));
   }));
+  return listItem({
+    source: entry.source,
+    title: entry.title || entry.filename || 'Saved',
+    meta: [ext && ext[1].toUpperCase(), entry.at && timeAgo(entry.at)].filter(Boolean).join(' · '),
+    actions,
+  });
+}
+
+function renderHistory(history, showAll = false) {
+  historyEntries = history || [];
+  historyExpanded = showAll;
+  const total = historyEntries.length;
+  $('history-title').textContent = 'Recent downloads' + (total ? ' (' + total + ')' : '');
+  $('clear-history').disabled = !total;
+  const shown = showAll ? historyEntries : historyEntries.slice(0, HISTORY_SHOWN);
+  $('history-list').replaceChildren(...(total ? shown.map(historyItem) : [textNode('div', 'list-empty hint', 'No downloads yet')]));
+  const more = $('history-more');
+  more.classList.toggle('hidden', total <= HISTORY_SHOWN);
+  more.textContent = showAll ? 'Show less' : 'Show all (' + total + ')';
 }
 
 function loadSettings() {
@@ -371,13 +490,12 @@ function loadSettings() {
   });
 }
 
-function saveSettings() {
-  const config = {};
-  for (const field of Object.values(dirFields)) {
-    if (isDirDirty(field)) config[field.key] = field.input.value.trim();
-  }
+// A typed path saves when the field loses focus or Enter is pressed; only that
+// field is sent, so an untouched one inheriting the YouTube path isn't pinned.
+function saveDir(field) {
+  if (!isDirDirty(field)) return;
   setSettingsStatus('Saving…');
-  request({ type: 'setConfig', config })
+  request({ type: 'setConfig', config: { [field.key]: field.input.value.trim() } })
     .then((res) => {
       applyConfig(res);
       flashSettingsStatus('Saved');
@@ -387,7 +505,7 @@ function saveSettings() {
     });
 }
 
-Object.values(dirFields).forEach((field) => field.input.addEventListener('input', updateSaveButtonState));
+Object.values(dirFields).forEach((field) => field.input.addEventListener('change', () => saveDir(field)));
 
 settingInputs.forEach((input) => {
   input.addEventListener('change', () => {
@@ -426,8 +544,6 @@ settingsToggleBtn.addEventListener('click', () => {
   }
 });
 
-saveSettingsBtn.addEventListener('click', saveSettings);
-
 // The background script picks the folder and saves it (the popup may close
 // while the dialog is open); if we are still here, show the stored result.
 Object.entries(dirFields).forEach(([name, field]) => {
@@ -454,7 +570,10 @@ Object.entries(dirFields).forEach(([name, field]) => {
 document.querySelectorAll('[data-open]').forEach((btn) => {
   btn.addEventListener('click', () => {
     const field = dirFields[btn.dataset.open];
-    send({ type: 'openPath', source: btn.dataset.open, path: field.input.value.trim() })
+    // An empty field is an inherited location; the host resolves it to the
+    // folder that downloads for this tab actually land in.
+    request({ type: 'openPath', source: btn.dataset.open, path: field.input.value.trim() })
+      .then(() => flashSettingsStatus('Opened folder'))
       .catch((err) => setSettingsStatus('Error: ' + err.message));
   });
 });
@@ -462,6 +581,8 @@ document.querySelectorAll('[data-open]').forEach((btn) => {
 $('clear-history').addEventListener('click', () => {
   browser.storage.local.remove('history').then(() => renderHistory([]));
 });
+
+$('history-more').addEventListener('click', () => renderHistory(historyEntries, !historyExpanded));
 
 // Two clicks, so a stray one can't wipe the settings.
 const resetBtn = $('reset-settings');
@@ -546,8 +667,10 @@ function init() {
     currentTabUrlValue = url;
     currentTabId = tab.id;
     // A missing/stale background must not leave the popup stuck on "Loading…".
-    const job = await send({ type: 'getJob', tabUrl: url }).catch(() => null);
-    if (job) lastJob = job;
+    const state = readJobState(await send({ type: 'getJob', tabUrl: url }).catch(() => null));
+    lastJob = state.job;
+    queue = state.queue;
+    renderQueue();
     selectTab(startTab(url, s.defaultTab));
   }).catch((err) => {
     panelError('youtube', { message: 'Could not start: ' + err.message, hint: 'Reload the extension or restart the browser.' });

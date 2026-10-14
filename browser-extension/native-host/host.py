@@ -285,9 +285,12 @@ def _config_payload(request_id):
         'type': 'configResult',
         'requestId': request_id,
         'ok': True,
+        # YouTube always has a value (it falls back to the default folder);
+        # Twitter/Web report only what was explicitly saved, '' meaning "same
+        # as YouTube", so saving one category never appears to set the others.
         'downloadDir': core.get_download_dir('youtube'),
-        'twitterDownloadDir': core.get_download_dir('twitter'),
-        'webDownloadDir': core.get_download_dir('web'),
+        'twitterDownloadDir': core.get_dir_override('twitter'),
+        'webDownloadDir': core.get_dir_override('web'),
         'hostVersion': HOST_VERSION,
         'ytdlp': errors.ytdlp_version_info(),
     }
@@ -357,7 +360,7 @@ def handle_make_dir(msg):
 def handle_open_path(msg):
     request_id = msg.get('requestId')
     try:
-        path = msg.get('path') or core.get_download_dir(msg.get('source') or 'youtube')
+        path = os.path.expanduser(msg.get('path') or core.get_download_dir(msg.get('source') or 'youtube'))
         os.makedirs(path, exist_ok=True)
         os.startfile(path)
         send_message({'type': 'openPathResult', 'requestId': request_id, 'ok': True})

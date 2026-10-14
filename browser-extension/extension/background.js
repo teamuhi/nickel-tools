@@ -12,10 +12,9 @@ let port = null;
 // requestId -> { resolve, reject }, for one-shot request/response calls (ping, formats)
 const pendingRequests = {};
 
-// requestId -> tabUrl, so a pushed jobUpdate can find its job
-const requestIdToTabUrl = {};
-
-// tabUrl -> { requestId, title, mode, source, status, percent, startedAt, filename, error, errorCode, errorHint }
+// id (the host requestId) -> { id, tabUrl, url, title, mode, source, status, percent, queuedAt, startedAt,
+//   params, sig, filename, error, errorCode, errorHint }. status 'queued' = waiting for its turn; `params`
+// (the download message) is dropped once the job is sent to the host.
 const jobs = {};
 
 // notificationId -> file path, so clicking a finished-download notification
@@ -91,18 +90,24 @@ function failure(err) {
   return { ok: false, error: err.message, errorCode: err.code, errorHint: err.hint, errorDetail: err.detail };
 }
 
-const isActive = (job) => job.status !== 'finished' && job.status !== 'error';
-const jobNotificationId = (job) => (job.requestId ? 'job-' + job.requestId : undefined);
+const isActive = (job) => job.status !== 'finished' && job.status !== 'error'; // running or queued
+const isRunning = (job) => isActive(job) && job.status !== 'queued';
+const jobNotificationId = (job) => (job.id ? 'job-' + job.id : undefined);
+const byQueuedAt = (a, b) => a.queuedAt - b.queuedAt;
 
 const STATUS_WORDS = { starting: 'Starting', downloading: 'Downloading', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
 const BADGE_COLORS = { active: '#111111', finished: '#346538', error: '#9f2f2d' };
 const BADGE_FLASH_MS = { finished: 5000, error: 10000 };
 const DEFAULT_TITLE = 'Download media from this page';
 
-// Toolbar badge: progress while exporting, then a short-lived check or "!".
-// This is what shows an export is running while the popup is closed.
+// Toolbar badge: progress while exporting (alternating with "+N" while others
+// wait in the queue), then a short-lived check or "!". This is what shows an
+// export is running while the popup is closed.
+const BADGE_TICK_MS = 2000;
 let badgeFlash = null;
 let badgeFlashTimer = null;
+let badgeTicker = null;
+let badgePhase = 0; // 0 = progress, 1 = waiting count
 let lastBadge = '';
 
 function flashBadge(status) {
@@ -117,18 +122,33 @@ function clearBadgeFlash() {
   updateBadge();
 }
 
+// Runs only while jobs are waiting, so the badge isn't redrawn for nothing.
+function setBadgeTicker(on) {
+  if (on && !badgeTicker) {
+    badgeTicker = setInterval(() => { badgePhase ^= 1; updateBadge(); }, BADGE_TICK_MS);
+  } else if (!on && badgeTicker) {
+    clearInterval(badgeTicker);
+    badgeTicker = null;
+    badgePhase = 0;
+  }
+}
+
 async function updateBadge() {
   const { showBadge } = await getSettings();
-  const active = Object.values(jobs).filter(isActive);
+  const all = Object.values(jobs);
+  const running = all.find(isRunning);
+  const waiting = all.filter((job) => job.status === 'queued').length;
+  setBadgeTicker(showBadge && !!running && waiting > 0);
   let text = '';
   let color = BADGE_COLORS.active;
   let title = DEFAULT_TITLE;
-  if (showBadge && active.length) {
-    const job = active.reduce((a, b) => ((b.startedAt || 0) > (a.startedAt || 0) ? b : a));
-    const percent = Math.round(job.percent || 0);
-    text = active.length > 1 ? String(active.length) : percent + '%';
-    title = 'nickel.tools: ' + (STATUS_WORDS[job.status] || 'Exporting') + (job.title ? ' "' + job.title + '"' : '') + '… ' + percent + '%'
-      + (active.length > 1 ? ' (+' + (active.length - 1) + ' more)' : '');
+  if (showBadge && (running || waiting)) {
+    const percent = running ? Math.round(running.percent || 0) : 0;
+    text = !running || badgePhase === 1 ? '+' + waiting : percent + '%';
+    title = 'nickel.tools: ' + (running
+      ? (STATUS_WORDS[running.status] || 'Exporting') + (running.title ? ' "' + running.title + '"' : '') + '… ' + percent + '%'
+      : 'starting the next download')
+      + (waiting ? ' · ' + waiting + ' queued' : '');
   } else if (showBadge && badgeFlash) {
     text = badgeFlash === 'finished' ? '✓' : '!';
     color = BADGE_COLORS[badgeFlash];
@@ -150,12 +170,13 @@ const finishedJobs = new Set();
 
 // Everything that happens once a job ends: badge, notification, history, auto-reveal.
 async function jobDone(job) {
-  const id = job.requestId || job.title;
-  if (finishedJobs.has(id)) return;
-  finishedJobs.add(id);
+  if (finishedJobs.has(job.id)) return;
+  finishedJobs.add(job.id);
   const isError = job.status === 'error';
   flashBadge(isError ? 'error' : 'finished');
   updateBadge();
+  prune();
+  pumpQueue(); // the next queued download starts without waiting for the notification work below
 
   const settings = await getSettings();
   if (isError ? settings.notifyError : settings.notifyFinish) notify(job, isError);
@@ -165,7 +186,7 @@ async function jobDone(job) {
     ensurePort().postMessage({ type: 'revealFile', requestId: newRequestId(), path: job.path });
   }
   const { history = [] } = await browser.storage.local.get('history');
-  history.unshift({ title: job.title || job.filename || 'Saved', filename: job.filename, path: job.path, source: job.source, at: Date.now() });
+  history.unshift({ title: job.title || job.filename || 'Saved', filename: job.filename, path: job.path, source: job.source, url: job.url, mode: job.mode, at: Date.now() });
   browser.storage.local.set({ history: history.slice(0, HISTORY_MAX) });
 }
 
@@ -201,8 +222,9 @@ browser.notifications.onClosed.addListener((notificationId) => {
   delete notificationPaths[notificationId];
 });
 
+// The popup shows one job per tab (the newest) plus the whole queue.
 function broadcast(tabUrl) {
-  browser.runtime.sendMessage({ type: 'jobUpdate', tabUrl, job: jobs[tabUrl] }).catch(() => {
+  browser.runtime.sendMessage({ type: 'jobUpdate', tabUrl, job: publicJob(latestJobFor(tabUrl)), queue: queueSnapshot() }).catch(() => {
     // No popup listening; that's fine.
   });
 }
@@ -221,15 +243,12 @@ function onPortMessage(msg) {
   }
 
   if (msg.type === 'jobUpdate') {
-    const tabUrl = requestIdToTabUrl[msg.requestId];
-    if (!tabUrl || !jobs[tabUrl]) return;
-    Object.assign(jobs[tabUrl], msg);
-    broadcast(tabUrl);
+    const job = jobs[msg.requestId];
+    if (!job) return;
+    Object.assign(job, msg);
+    broadcast(job.tabUrl);
     updateBadge();
-    if (msg.status === 'finished' || msg.status === 'error') {
-      jobDone(jobs[tabUrl]);
-      delete requestIdToTabUrl[msg.requestId];
-    }
+    if (msg.status === 'finished' || msg.status === 'error') jobDone(job);
   }
 }
 
@@ -241,14 +260,16 @@ function onPortDisconnect() {
   Object.values(pendingRequests).forEach((p) => p.reject(new Error(message)));
   for (const id in pendingRequests) delete pendingRequests[id];
 
-  for (const tabUrl in jobs) {
-    if (jobs[tabUrl].status !== 'finished' && jobs[tabUrl].status !== 'error') {
-      jobs[tabUrl].status = 'error';
-      jobs[tabUrl].error = message;
-      broadcast(tabUrl);
-      jobDone(jobs[tabUrl]);
-    }
-  }
+  // Queued jobs keep waiting; only the one the dead host was running fails.
+  // Collect it first: jobDone starts the next queued job, which must not be failed too.
+  const dead = Object.values(jobs).filter(isRunning);
+  dead.forEach((job) => {
+    job.status = 'error';
+    job.error = message;
+    broadcast(job.tabUrl);
+  });
+  dead.forEach(jobDone);
+  pumpQueue(); // reconnects and carries on with the queue
 }
 
 // Which config field holds each tab's save location.
@@ -262,33 +283,112 @@ function browseFolder(source) {
   return sendRequest({ type: 'browseFolder', requestId: newRequestId(), source }).then((res) => res.path || null);
 }
 
-function startJob(message) {
-  const requestId = newRequestId();
+// Strips what the popup must not see (the pending download message).
+function publicJob(job) {
+  if (!job) return null;
+  const { params, sig, ...rest } = job;
+  return rest;
+}
+
+function latestJobFor(tabUrl) {
+  return Object.values(jobs).filter((job) => job.tabUrl === tabUrl).reduce((a, b) => (!a || b.queuedAt >= a.queuedAt ? b : a), null);
+}
+
+// The running job first, then the waiting ones in arrival order.
+function queueSnapshot() {
+  const all = Object.values(jobs);
+  return [...all.filter(isRunning), ...all.filter((job) => job.status === 'queued').sort(byQueuedAt)]
+    .map(({ id, title, source, mode, status, percent, tabUrl }) => ({ id, title, source, mode, status, percent, tabUrl }));
+}
+
+// Keeps running and queued jobs plus the newest finished/failed one per tab
+// (the popup still shows its "Saved as..." line); older ones are dropped.
+function prune() {
+  const newest = {};
+  Object.values(jobs).filter((job) => !isActive(job)).forEach((job) => {
+    if (!newest[job.tabUrl] || job.queuedAt >= newest[job.tabUrl].queuedAt) newest[job.tabUrl] = job;
+  });
+  Object.values(jobs).forEach((job) => {
+    if (!isActive(job) && newest[job.tabUrl] !== job) delete jobs[job.id];
+  });
+}
+
+// Adds a download to the queue (one runs at a time, oldest first). A repeat of
+// the same tab + options that is already waiting or running is ignored.
+function enqueue(message) {
   const { type, tabUrl, ...params } = message;
-  requestIdToTabUrl[requestId] = tabUrl;
-  jobs[tabUrl] = {
-    requestId,
+  const sig = JSON.stringify(params);
+  let job = Object.values(jobs).find((j) => isActive(j) && j.tabUrl === tabUrl && j.sig === sig);
+  if (!job) {
+    job = {
+      id: newRequestId(),
+      tabUrl,
+      url: message.url,
+      title: message.title,
+      mode: message.mode,
+      source: message.source || 'youtube',
+      status: 'queued',
+      percent: 0,
+      queuedAt: Date.now(),
+      params,
+      sig,
+    };
+    jobs[job.id] = job;
+    pumpQueue();
+    if (job.status === 'queued') {
+      broadcast(tabUrl);
+      updateBadge();
+    }
+  }
+  return { id: job.id, position: queueSnapshot().findIndex((j) => j.id === job.id) };
+}
+
+// Starts the oldest queued job unless one is already running.
+function pumpQueue() {
+  const all = Object.values(jobs);
+  if (all.some(isRunning)) return;
+  const next = all.filter((job) => job.status === 'queued').sort(byQueuedAt)[0];
+  if (next) runJob(next);
+}
+
+function runJob(job) {
+  const { params } = job;
+  delete job.params;
+  job.status = 'starting';
+  job.startedAt = Date.now();
+  notifyStarted(job);
+  (async () => {
+    try {
+      const cookies = job.source === 'twitter' ? await getXCookies() : null;
+      ensurePort().postMessage({ ...params, type: 'download', requestId: job.id, cookies });
+    } catch (e) {
+      job.status = 'error';
+      job.error = e.message;
+      broadcast(job.tabUrl);
+      jobDone(job);
+    }
+  })();
+  broadcast(job.tabUrl);
+  updateBadge();
+}
+
+// A job that failed before it could be queued (e.g. the folder dialog), so the popup shows why.
+function failJob(message, error) {
+  const job = {
+    id: newRequestId(),
+    tabUrl: message.tabUrl,
+    url: message.url,
     title: message.title,
     mode: message.mode,
     source: message.source || 'youtube',
-    status: 'starting',
+    status: 'error',
     percent: 0,
-    startedAt: Date.now(),
+    queuedAt: Date.now(),
+    error,
   };
-  notifyStarted(jobs[tabUrl]);
-  (async () => {
-    try {
-      const cookies = message.source === 'twitter' ? await getXCookies() : null;
-      ensurePort().postMessage({ ...params, type: 'download', requestId, cookies });
-    } catch (e) {
-      jobs[tabUrl].status = 'error';
-      jobs[tabUrl].error = e.message;
-      broadcast(tabUrl);
-      jobDone(jobs[tabUrl]);
-    }
-  })();
-  broadcast(tabUrl);
-  updateBadge();
+  jobs[job.id] = job;
+  broadcast(job.tabUrl);
+  jobDone(job);
 }
 
 // One scan.js result per frame -> the top frame's page info plus every frame's
@@ -318,20 +418,15 @@ browser.runtime.onMessage.addListener((message) => {
   }
 
   if (message.type === 'startDownload') {
-    startJob(message);
-    return;
+    return Promise.resolve(enqueue(message));
   }
 
   if (message.type === 'startDownloadTo') {
     return browseFolder(message.source)
       .then((path) => {
-        if (path) startJob({ ...message, downloadDir: path });
+        if (path) enqueue({ ...message, downloadDir: path });
       })
-      .catch((err) => {
-        jobs[message.tabUrl] = { source: message.source, status: 'error', percent: 0, error: 'Could not choose a folder: ' + err.message };
-        broadcast(message.tabUrl);
-        notify(jobs[message.tabUrl]);
-      });
+      .catch((err) => failJob(message, 'Could not choose a folder: ' + err.message));
   }
 
   if (message.type === 'pickDir') {
@@ -355,7 +450,19 @@ browser.runtime.onMessage.addListener((message) => {
 
   if (message.type === 'getJob') {
     clearBadgeFlash();
-    return Promise.resolve(jobs[message.tabUrl] || null);
+    return Promise.resolve({ job: publicJob(latestJobFor(message.tabUrl)), queue: queueSnapshot() });
+  }
+
+  // Only a job still waiting can be removed; the host has no way to cancel a running one.
+  if (message.type === 'removeQueued') {
+    const job = jobs[message.id];
+    const removed = !!job && job.status === 'queued';
+    if (removed) {
+      delete jobs[job.id];
+      broadcast(job.tabUrl);
+      updateBadge();
+    }
+    return Promise.resolve({ removed });
   }
 
   if (message.type === 'getConfig') {

@@ -134,11 +134,21 @@ The filename box is pre-filled with the video's own title as gray
 placeholder text; type over it to save under a different name.
 
 Progress shows in the popup. If you close it, the toolbar icon keeps showing
-the export: a badge with the percentage (the number of exports when several
-run, then a check or `!`), with the title in the icon's tooltip. You also get
+the export: a badge with the percentage (alternating with `+N` while N more
+downloads wait in the queue, then a check or `!`), with the title and the
+queue length in the icon's tooltip. You also get
 a desktop notification when it starts and when it finishes or fails, since a
 background script tracks the job independently. Click a finished-download
 notification to open its folder in Explorer with the file selected.
+
+Downloads run **one at a time**. Click Download again (on any tab, or from
+another browser tab) while one is running and the new one joins a queue; the
+button then reads **Queue MP4** (or the chosen format) and its hint says how
+many downloads are ahead. A collapsible **Queue** list above the button shows
+what is running and waiting, with a remove button on waiting items. A running
+download can't be cancelled (the native host has no cancel), so only waiting
+ones can be removed. Repeating an identical download that is already queued or
+running is ignored. No native host update is needed for the queue.
 
 By default the finished file lands in `Downloads
 ickel-tools\` in
@@ -159,7 +169,7 @@ a path into the browser's path box and confirm it.
 
 The gear icon opens the settings:
 
-- **Save locations** per tab, each with Browse and Open buttons.
+- **Save locations** per tab, each with Browse and Open buttons. Browsing or typing a path (Enter or leaving the field) saves it right away; there is no Save button.
 - **YouTube**: default video format (MP4, MKV or WebM). The same choice is on
   the YouTube tab as **Format**; WebM only offers VP9/AV1 and falls back to
   MP4 when the video has neither.
@@ -168,7 +178,10 @@ The gear icon opens the settings:
 - **Appearance & startup**: theme (System, Light or Dark), which tab opens
   first, and whether your last-used options are remembered.
 - **X account**: use your x.com login for sensitive or protected tweets.
-- **History**: the last downloads (with Show), and a clear button.
+- **History**: the last 20 downloads (5 shown, **Show all** for the rest) with
+  source, format and time. Per entry: show in folder, open the source page
+  (not available for entries saved by older versions) and remove; plus a
+  clear button.
 - **Maintenance**: extension, host and yt-dlp versions, and a reset button.
 
 If a file with the resulting name already exists (re-downloading the same

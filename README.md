@@ -48,6 +48,21 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
   > permission to save, and respect copyright and each site's Terms of
   > Service. You are responsible for how you use this tool.
 
+- **Separate save locations**: YouTube, X / Twitter and Web each have their
+  own download folder in Settings. X / Twitter and Web follow the YouTube
+  folder until you set their own, and the folder button next to each opens
+  that location in Explorer.
+
+- **Download queue**: start several downloads back to back and they line up
+  and run one at a time. While the popup is closed, the toolbar icon badge
+  alternates between the running download's progress (`45%`) and the number
+  waiting (`+2`). A list in the popup shows what is running and waiting, and
+  you can remove anything that has not started yet.
+
+- **Download history**: Settings lists your recent downloads with the source,
+  format and time. Each entry can show the file in its folder, reopen the
+  page it came from, or be removed on its own.
+
 ## How to Install <img src="browser-extension/extension/icons/icon-16.png">
 
 Windows only. One installer covers every supported browser you have: it
