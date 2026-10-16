@@ -20,55 +20,52 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
 
 ## Key features <img src="browser-extension/extension/icons/icon-16.png">
 
-- **YouTube video download**: pick the resolution (with the estimated file
-  size shown before you download), the video codec (H.264, VP9 or AV1), and
-  the container (MP4, MKV or WebM).
+- **YouTube video**: choose resolution (with estimated file size), codec
+  (H.264, VP9, AV1) and container (MP4, MKV, WebM). **Include audio** is on by
+  default; turn it off for a silent video.
 
-- **YouTube audio download**: extract audio as MP3, M4A, Opus, OGG, FLAC,
-  ALAC or WAV at your chosen quality. Title, artist and cover art can be
-  edited in the popup and are embedded in the file as tags.
+- **YouTube clip**: the **Clip** tab downloads just a piece of a video. Drag
+  the timeline handles or type the times; the cut is frame-accurate.
 
-- **Twitter/X media download**: save a tweet's photos, videos and GIFs as-is.
-  Photos can be saved at Original, Large, Medium or Small size as PNG, JPG,
-  WebP or GIF; videos can be saved at your chosen resolution or converted to
-  a GIF (with adjustable frame rate, speed and width, and an optional
-  start/end clip).
+- **YouTube audio**: extract MP3, M4A, Opus, OGG, FLAC, ALAC or WAV at your
+  chosen quality, with editable title, artist and cover art embedded as tags.
 
-- **Twitter/X tweet card**: render a tweet as an image (or an MP4, for video
-  and GIF tweets) in a light or dark card theme. You can toggle the profile
-  name, @handle, date and verified badge, and choose the card's resolution.
+- **Twitter/X media**: save a tweet's photos, videos and GIFs. Photos come in
+  Original to Small sizes as PNG, JPG, WebP or GIF; videos at your chosen
+  resolution, or converted to a GIF (adjustable frame rate, speed, width and
+  clip).
 
-- **Web media download**: grab the video or audio from other web pages, in
-  the same formats as above, plus the images embedded in HTML pages. Video can
-  be converted to MP4, WebM, MKV, MOV, AVI or GIF, optionally capped at a chosen
-  resolution (2160p down to 240p, never upscaled).
+- **Twitter/X tweet card**: render a tweet as an image (or MP4 for video/GIF
+  tweets) in a light or dark theme. Toggle the name, @handle, date and
+  verified badge, and pick the resolution.
+
+- **Web media**: grab video, audio and HTML-embedded images from other sites.
+  Video can be converted to MP4, WebM, MKV, MOV, AVI or GIF and capped at a
+  resolution (2160p to 240p, never upscaled).
 
   > **Disclaimer:** Web media download relies on [yt-dlp](https://github.com/yt-dlp/yt-dlp)
-  > and on how each site serves its media, so it is only guaranteed to be
-  > tested on YouTube. Other sites are "should work" rather than verified, and
-  > some will fail, especially those that use DRM-protected or login-gated
-  > streams, which are not supported. Only download content you own or have
-  > permission to save, and respect copyright and each site's Terms of
-  > Service. You are responsible for how you use this tool.
+  > and is only tested on YouTube. Other sites may fail, especially DRM-protected
+  > or login-gated streams, which are not supported. Only download content you
+  > own or have permission to save, and respect copyright and each site's Terms
+  > of Service. You are responsible for how you use this tool.
 
-- **Separate save locations**: YouTube, X / Twitter and Web each have their
-  own download folder in Settings. X / Twitter and Web follow the YouTube
-  folder until you set their own, and the folder button next to each opens
-  that location in Explorer.
+- **Separate save folders**: YouTube, X / Twitter and Web each have their own
+  folder in Settings (the latter two follow YouTube's until set). The folder
+  button opens it in Explorer.
 
-- **Download queue**: start several downloads back to back and they line up
-  and run one at a time. While the popup is closed, the toolbar icon badge
-  alternates between the running download's progress (`45%`) and the number
-  waiting (`+2`). A list in the popup shows what is running and waiting, and
-  you can remove anything that has not started yet.
+- **Download queue**: downloads line up and run one at a time. With the popup
+  closed, the toolbar badge alternates between progress (`45%`) and the number
+  waiting (`+2`).
 
-- **Download history**: Settings lists your recent downloads with the source,
-  format and time. Each entry can show the file in its folder, reopen the
-  page it came from, or be removed on its own.
+- **Downloads panel**: a collapsible panel lists running and waiting downloads
+  with progress bars. Pause / Resume and Cancel (second click confirms and
+  deletes the partial file) apply to the running one; waiting ones can be
+  removed. Paused downloads keep their place and auto-cancel after an hour.
+  Only the download stage can be paused, not conversion or rendering. Needs the
+  updated native host (`controlJob`); reinstall it if the buttons say so.
 
-- **Loading spinner**: while a tab fetches the media info (YouTube, tweet or
-  page scan), a small spinner shows next to the loading message. It follows
-  the light/dark theme.
+- **Download history**: Settings lists recent downloads with source, format and
+  time. Each can show its file in the folder, reopen its page, or be removed.
 
 ## How to Install <img src="browser-extension/extension/icons/icon-16.png">
 
@@ -142,6 +139,13 @@ what it does, how to install it, and how it works.
   Settings. WebM is limited to VP9/AV1 and falls back to MP4 if the video
   doesn't offer them.
 
+- YouTube tab: new **Clip** tab (Video / Audio / Clip). Same trim timeline as
+  the X GIF (shared code), a 10 s clip that starts where the video is
+  playing now, Start/End boxes that accept `+1000` / `-250` (centiseconds)
+  or `+10s` / `+500ms` / `+1:30` to nudge the value, resolution sizes and
+  the estimate scale to the clip length, and **Include audio** applies too.
+  Output is H.264 + AAC (MP4/MKV) or VP9 + Opus (WebM). Needs the rebuilt
+  native host (the tab stays disabled with a hint until then).
 - YouTube tab: new "Preferred codec" picker under Resolution (H.264 + AAC as
   MP4, VP9 + Opus or AV1 + Opus as WebM). Only codecs the video offers are
   listed; if one isn't available at the chosen resolution it falls back to

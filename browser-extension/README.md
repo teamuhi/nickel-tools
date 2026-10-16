@@ -118,7 +118,23 @@ manifest rather than a store's signature.
 Open a page with video or audio, click the toolbar icon and pick **Video**
 (MP4, with resolution) or **Audio**, each showing an estimated file size, and
 click Download. Not every site has both: an audio-only page (a podcast, a
-SoundCloud track) won't have any video resolutions, for instance.
+SoundCloud track) won't have any video resolutions, for instance. Video has an
+**Include audio** switch (on by default); switch it off to save a silent video.
+
+**Clip** cuts a snippet out of the video. Drag the two handles on the
+timeline (or type the Start / End times, e.g. `1:02.5`); it starts at the point
+the video is currently playing (0:00 if that can't be read) and runs 10 seconds.
+The Start / End boxes also take operands that move the current value:
+`+1000` / `-250` add or subtract centiseconds (`+1000` is 10 s), `+10s` seconds,
+`+500ms` milliseconds, `+1:30` minutes:seconds. This works for the X GIF trim
+boxes too. Pick the resolution (sizes shown are for the clip, not the whole
+video) and MP4, MKV or WebM; **Include audio** works here too. Only the chosen
+part is downloaded, then re-encoded so the cut is frame-accurate (H.264 + AAC,
+or VP9 + Opus for WebM), so a clip takes a little longer than its length would
+suggest, and the preferred-codec row is hidden. It needs the current native host
+(older hosts show the tab disabled) and a video whose length is known; sites
+that serve segmented streams yt-dlp can't hand to ffmpeg are told to download
+the whole video instead.
 
 **Audio** has its own music-style layout: a "now playing" card (cover, title,
 artist, album, year), a grid of formats (MP3, M4A, Opus, OGG, FLAC, ALAC, WAV;
@@ -144,11 +160,32 @@ notification to open its folder in Explorer with the file selected.
 Downloads run **one at a time**. Click Download again (on any tab, or from
 another browser tab) while one is running and the new one joins a queue; the
 button then reads **Queue MP4** (or the chosen format) and its hint says how
-many downloads are ahead. A collapsible **Queue** list above the button shows
-what is running and waiting, with a remove button on waiting items. A running
-download can't be cancelled (the native host has no cancel), so only waiting
-ones can be removed. Repeating an identical download that is already queued or
-running is ignored. No native host update is needed for the queue.
+many downloads are ahead. A collapsible **Downloads** panel above the button
+shows what is running and waiting, each with a progress bar, and opens by
+itself when a download starts. A running download has **Pause / Resume** and
+**Cancel** buttons (Cancel needs a second click and deletes the partial file);
+waiting items have a remove button. Repeating an identical download that is
+already queued or running is ignored.
+
+Pause and cancel are handled by the native host (the `controlJob` message): the
+popup asks the background script, which writes a small control file
+(`%LOCALAPPDATA%\nickel-tools\jobs\<id>.ctl`) that the process running the
+download checks at every progress report. Going through a file means it also
+works after Chrome restarts its service worker and reconnects to a new host
+process. Notes:
+
+- Only the download stage can be paused (the network read blocks until resumed).
+  A conversion, merge or card render in progress can be cancelled, not paused;
+  a cancel that arrives while yt-dlp is merging takes effect when the merge
+  ends, or the file is simply kept if it was already done.
+- A paused download keeps the queue slot (the next one doesn't start) and is
+  cancelled automatically after an hour. A very long pause can also make the
+  server drop the connection, in which case the download fails and must be
+  restarted.
+- Cancelling a Web download keeps files already saved earlier in the same job;
+  only the half-written one is removed.
+- Needs the updated native host; an older one never answers `controlJob`, and
+  the panel then says the host needs reinstalling.
 
 By default the finished file lands in `Downloads
 ickel-tools\` in
@@ -202,7 +239,7 @@ items shows a thumbnail strip to pick which one to download.
 
 - **Media only** saves the tweet's own file: the video as MP4 (pick a
   resolution; sizes X doesn't serve, such as 480p, are downscaled with ffmpeg
-  and marked "scaled"), a photo at Original, Large, Medium or Small size, saved as **PNG (default), JPG, WebP or GIF** (Image format row; transparency is flattened onto white for JPG), or a
+  and marked "scaled"; an **Include audio** switch, on by default, can drop the sound), a photo at Original, Large, Medium or Small size, saved as **PNG (default), JPG, WebP or GIF** (Image format row; transparency is flattened onto white for JPG), or a
   video/GIF **converted to a GIF**. For GIF you can set the frame rate, speed, resolution (width),
   and an optional clip: switch on **Trim clip** to choose start/end points
   with the timeline handles or the time boxes (leave it off to convert the whole

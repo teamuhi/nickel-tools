@@ -7,7 +7,6 @@
   const FPS_OPTIONS = [10, 12, 15, 20, 24, 30];
   const SPEED_OPTIONS = [0.5, 0.75, 1, 1.25, 1.5, 2];
   const WIDTH_OPTIONS = [720, 540, 480, 360, 240];
-  const MIN_CLIP = 0.1; // seconds
   const GIF_BYTES_PER_PIXEL_FRAME = 0.12; // rough palette+LZW average, for the size hint
   const CARD_BASE_W = 598; // px at 1x, matches backend render.CARD_W
   const CARD_SCALES = [1, 2, 3];
@@ -29,7 +28,7 @@
     quote: $('card-quote'), cardOwn: $('card-own'),
     card: $('tw-card'), cardAvatar: $('card-avatar'), cardName: $('card-name'), cardVerified: $('card-verified'),
     cardHandle: $('card-handle'), cardText: $('card-text'), cardDate: $('card-date'),
-    heroImg: $('tw-hero-img'), qualityRow: $('tw-quality-row'), ext: $('tw-ext'),
+    heroImg: $('tw-hero-img'), qualityRow: $('tw-quality-row'), audioRow: $('tw-audio-row'), withAudio: $('tw-with-audio'), ext: $('tw-ext'),
   };
 
   el.quote.append($('quote-tpl').content.cloneNode(true));
@@ -41,30 +40,16 @@
   let translation = null; // { target, own, quote } of { text, label } | null, for card.translate
   let translating = 0; // sequence number of the in-flight translate request, 0 when idle
   let translateSeq = 0;
-  let trim = { start: 0, end: 0 };
   let duration = 0; // seconds of the selected video; 0 = unknown, so no trimming is offered
 
   const currentItem = () => (tweet && tweet.media[selected]) || null;
   const isVideo = (item) => item && item.type !== 'photo';
   // The range the GIF is cut from: the chosen clip while "Trim clip" is on, else the whole video.
-  const clip = () => (el.clipOn.checked && duration ? trim : { start: 0, end: duration });
+  const clip = () => (el.clipOn.checked && duration ? trimCtl.get() : { start: 0, end: duration });
   const format = () => document.querySelector('input[name="twfmt"]:checked').value;
 
   function savePrefs() {
     browser.storage.local.set({ twKind: kind, twCard: card, twPhotoFormat: el.photoFormat.value });
-  }
-
-  // ----------------------------------------------------------- time helpers
-
-  function formatTime(seconds) {
-    const m = Math.floor(seconds / 60);
-    return m + ':' + (seconds - m * 60).toFixed(1).padStart(4, '0');
-  }
-
-  // Accepts "12", "12.5", "1:02", "1:02.5"; returns null if unparseable.
-  function parseTime(text) {
-    const m = /^\s*(?:(\d+):)?(\d+(?:\.\d+)?)\s*$/.exec(text);
-    return m ? (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2]) : null;
   }
 
   // --------------------------------------------------------------- render
@@ -110,42 +95,30 @@
     el.gifEst.textContent = width + '×' + height + ' · ~' + formatBytes(bytes) + ' · ' + seconds.toFixed(1) + ' s';
   }
 
-  function updateTrimUI() {
-    const max = Number(el.end.max) || 1;
-    el.range.style.setProperty('--lo-f', trim.start / max);
-    el.range.style.setProperty('--hi-f', trim.end / max);
-    el.start.value = trim.start;
-    el.end.value = trim.end;
-    el.startT.value = formatTime(trim.start);
-    el.endT.value = formatTime(trim.end);
+  // Trim clip row text and the size estimate follow the selected range.
+  function updateClipUI() {
+    const trim = trimCtl.get();
     el.clipLen.textContent = el.clipOn.checked
       ? formatTime(trim.start) + ' → ' + formatTime(trim.end) + ' · ' + (trim.end - trim.start).toFixed(1) + ' s'
       : duration ? 'Whole video · ' + formatTime(duration) : 'Whole video';
     updateGifEstimate();
   }
 
+  // The trim timeline; dragging a thumb also scrubs the preview to it.
+  const trimCtl = createTrim({
+    range: el.range, start: el.start, end: el.end, startText: el.startT, endText: el.endT,
+    onChange(trim, moved) {
+      updateClipUI();
+      if (el.preview.src && moved) el.preview.currentTime = moved === 'start' ? trim.start : Math.max(trim.start, trim.end - 0.1);
+    },
+  });
+
   // Sets the selected video's length: sizes the range, resets the clip and shows or hides the trim controls.
   function setDuration(seconds) {
     duration = seconds > 0 ? seconds : 0;
-    el.end.max = el.start.max = duration || 1;
     el.clipRow.classList.toggle('hidden', !duration);
     el.trim.classList.toggle('hidden', !duration || !el.clipOn.checked);
-    trim = { start: 0, end: duration };
-    updateTrimUI();
-  }
-
-  // Keeps start < end by at least MIN_CLIP, moving whichever thumb was not touched last.
-  function setTrim(start, end, moved) {
-    const max = Number(el.end.max) || 0;
-    start = Math.max(0, Math.min(start, max));
-    end = Math.max(0, Math.min(end, max));
-    if (end - start < MIN_CLIP) {
-      if (moved === 'start') start = Math.max(0, end - MIN_CLIP);
-      else end = Math.min(max, start + MIN_CLIP);
-    }
-    trim = { start: Math.round(start * 10) / 10, end: Math.round(end * 10) / 10 };
-    updateTrimUI();
-    if (el.preview.src && moved) el.preview.currentTime = moved === 'start' ? trim.start : Math.max(trim.start, trim.end - 0.1);
+    trimCtl.reset(duration);
   }
 
   function formatDate(iso, withTime) {
@@ -365,7 +338,7 @@
     }
     return format() === 'gif'
       ? { label: 'GIF', ext: '.gif', hint: 'Converted from the video.' }
-      : { label: 'MP4', ext: '.mp4', hint: '' };
+      : { label: 'MP4', ext: '.mp4', hint: el.withAudio.checked ? '' : 'Video only, no audio.' };
   }
 
   function render() {
@@ -384,6 +357,7 @@
       gifOpen = video && format() === 'gif';
       el.formats.classList.toggle('hidden', !video);
       el.qualityRow.classList.toggle('hidden', gifOpen);
+      el.audioRow.classList.toggle('hidden', gifOpen);
       el.photoOpts.classList.toggle('hidden', video);
       el.gifOpts.classList.toggle('hidden', !gifOpen);
     }
@@ -534,22 +508,12 @@
   });
 
   document.querySelectorAll('input[name="twfmt"]').forEach((radio) => radio.addEventListener('change', render));
+  el.withAudio.addEventListener('change', refreshOutput);
   [el.fps, el.speed, el.width].forEach((select) => select.addEventListener('change', updateGifEstimate));
-
-  el.start.addEventListener('input', () => setTrim(Number(el.start.value), trim.end, 'start'));
-  el.end.addEventListener('input', () => setTrim(trim.start, Number(el.end.value), 'end'));
-  el.startT.addEventListener('change', () => {
-    const t = parseTime(el.startT.value);
-    setTrim(t == null ? trim.start : t, trim.end, 'start');
-  });
-  el.endT.addEventListener('change', () => {
-    const t = parseTime(el.endT.value);
-    setTrim(trim.start, t == null ? trim.end : t, 'end');
-  });
 
   el.clipOn.addEventListener('change', () => {
     el.trim.classList.toggle('hidden', !el.clipOn.checked);
-    updateTrimUI();
+    updateClipUI();
     if (el.preview.src) el.preview.currentTime = clip().start;
   });
 
@@ -605,6 +569,7 @@
           format: fmt,
           mediaIndex: selected,
           quality,
+          audio: el.withAudio.checked,
           photoSize: el.photoSize.value || 'orig',
           photoFormat: el.photoFormat.value,
           gif: {

@@ -37,17 +37,22 @@ def run_ffmpeg(args, duration, on_progress, status, ffmpeg_location=None):
     except FileNotFoundError:
         raise TweetError('E_FFMPEG_MISSING', 'ffmpeg not found')
     tail = []
-    on_progress(status=status, percent=0)
-    for line in proc.stdout:
-        line = line.strip()
-        m = PROGRESS_KEY_RE.match(line)
-        if not m:
-            if line:
-                tail.append(line)
-                del tail[:-5]
-            continue
-        if m.group(1) == 'out_time_us' and duration and m.group(2).lstrip('-').isdigit():
-            on_progress(status=status, percent=max(0, min(99, round(int(m.group(2)) / 1e6 * 100 / duration, 1))))
+    try:
+        on_progress(status=status, percent=0)
+        for line in proc.stdout:
+            line = line.strip()
+            m = PROGRESS_KEY_RE.match(line)
+            if not m:
+                if line:
+                    tail.append(line)
+                    del tail[:-5]
+                continue
+            if m.group(1) == 'out_time_us' and duration and m.group(2).lstrip('-').isdigit():
+                on_progress(status=status, percent=max(0, min(99, round(int(m.group(2)) / 1e6 * 100 / duration, 1))))
+    except BaseException:
+        proc.kill()  # the callback aborted the job (cancelled): don't leave ffmpeg encoding in the background
+        proc.wait()
+        raise
     if proc.wait() != 0:
         raise FfmpegError('\n'.join(tail) or 'ffmpeg exited with code %d' % proc.returncode)
 
@@ -105,12 +110,47 @@ def to_gif(src, dest, fps, speed, width, start, end, on_progress, ffmpeg_locatio
     run_ffmpeg(args, clip / speed if clip else None, on_progress, 'converting', ffmpeg_location)
 
 
-def scale_video(src, dest, height, duration, on_progress, ffmpeg_location=None):
-    """Re-encodes `src` at `height` (width follows, kept even); audio is copied."""
+def scale_video(src, dest, height, duration, on_progress, ffmpeg_location=None, audio=True):
+    """Re-encodes `src` at `height` (width follows, kept even); audio is copied
+    unless `audio` is False."""
     args = ['-i', src, '-vf', 'scale=-2:%d:flags=lanczos,format=yuv420p' % height,
             *h264_args(ffmpeg_location, round(height * 16 / 9), height),
-            '-c:a', 'copy', '-movflags', '+faststart', dest]
+            *(['-c:a', 'copy'] if audio else ['-an']), '-movflags', '+faststart', dest]
     run_ffmpeg(args, duration, on_progress, 'converting', ffmpeg_location)
+
+
+CLIP_FORMATS = {'mp4': 'mp4', 'mkv': 'matroska', 'webm': 'webm'}  # container -> ffmpeg muxer
+
+
+def vp9_args():
+    return ['-c:v', 'libvpx-vp9', '-crf', '32', '-b:v', '0', '-deadline', 'realtime', '-cpu-used', '5', '-row-mt', '1']
+
+
+def clip_video(sources, dest, start, end, height, ext, audio, on_progress, ffmpeg_location=None):
+    """Cuts [start, end] seconds out of a video (+ separate audio) into `dest`,
+    re-encoded so the cut lands on exact frames: H.264 + AAC (MP4/MKV) or VP9 +
+    Opus (WebM). `sources` is [{'url', 'headers'}]: one muxed stream, or a video
+    stream followed by an audio stream; only the clipped part is fetched.
+    `audio` False drops the sound (and doesn't fetch it)."""
+    length = end - start
+    args = []
+    for src in sources if audio else sources[:1]:
+        headers = ''.join('%s: %s\r\n' % kv for kv in (src.get('headers') or {}).items())
+        args += (['-headers', headers] if headers else []) + ['-ss', '%.3f' % start, '-t', '%.3f' % length, '-i', src['url']]
+    args += ['-map', '0:v:0', '-pix_fmt', 'yuv420p']
+    args += ['-map', '1:a:0' if len(sources) > 1 else '0:a:0?'] if audio else ['-an']
+    args += vp9_args() if ext == 'webm' else h264_args(ffmpeg_location, round(height * 16 / 9), height)
+    if audio:
+        args += ['-c:a', 'libopus', '-b:a', '128k'] if ext == 'webm' else ['-c:a', 'aac', '-b:a', '192k']
+    if ext == 'mp4':
+        args += ['-movflags', '+faststart']
+    run_ffmpeg(args + ['-f', CLIP_FORMATS[ext], dest], length, on_progress, 'downloading', ffmpeg_location)
+
+
+def strip_audio(src, dest, duration, on_progress, ffmpeg_location=None):
+    """Copies the video stream(s) of `src` to `dest` without re-encoding, dropping all audio."""
+    run_ffmpeg(['-i', src, '-map', '0:v', '-c', 'copy', '-an', '-movflags', '+faststart', dest],
+               duration, on_progress, 'converting', ffmpeg_location)
 
 
 # ------------------------------------------------------------ card layout

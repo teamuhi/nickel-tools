@@ -16,6 +16,10 @@ class FfmpegError(Exception):
     """Raised when an ffmpeg run fails; message is the tail of its stderr."""
 
 
+class JobCancelled(Exception):
+    """Raised from a progress callback when the user cancels the running download."""
+
+
 class TweetError(Exception):
     """Raised for tweet-level problems with a known code (e.g. E_NO_MEDIA)."""
 

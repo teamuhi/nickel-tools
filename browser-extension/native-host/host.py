@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import queue
+import re
 import stat
 import string
 import struct
@@ -61,7 +62,7 @@ log = logging.getLogger('host')
 
 # Reported to the popup's Maintenance section; also tells it which features
 # (folder browser, container choice) this host build understands.
-HOST_VERSION = '0.11.0'
+HOST_VERSION = '0.12.0'
 
 # Chromium's MV3 service worker can be killed and restarted mid-download by
 # the browser at any time, and reconnecting always spawns a NEW host.exe
@@ -97,6 +98,100 @@ def write_job_file(request_id, patch):
 def read_job_file(request_id):
     with open(_job_path(request_id), 'r', encoding='utf-8') as f:
         return json.load(f)
+
+
+# Pause / cancel requests reach a running download through a small control file
+# next to its job file (jobs/<id>.ctl holding 'pause', 'run' or 'cancel') rather
+# than through memory: after a Chromium service-worker restart the extension is
+# talking to a NEW host process, which can only write the file for the old one
+# (the one running the download) to pick up.
+CONTROL_POLL_SECONDS = 0.2
+PAUSE_LIMIT_SECONDS = 3600  # a download left paused this long is cancelled, so an abandoned one can't keep the host alive forever
+JOB_ID_RE = re.compile(r'^[\w-]{1,64}$')
+
+
+def _control_path(request_id):
+    return os.path.join(JOBS_DIR, '%s.ctl' % request_id)
+
+
+def read_control(request_id):
+    try:
+        with open(_control_path(request_id), 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except OSError:
+        return ''
+
+
+def write_control(request_id, action):
+    """action: 'pause', 'resume' or 'cancel'. A cancel can't be undone."""
+    if read_control(request_id) == 'cancel':
+        return
+    with open(_control_path(request_id), 'w', encoding='utf-8') as f:
+        f.write('run' if action == 'resume' else action)
+
+
+def remove_control(request_id):
+    try:
+        os.remove(_control_path(request_id))
+    except OSError:
+        pass
+
+
+class JobGate(object):
+    """Wraps a download's on_progress callback so the user can pause and cancel
+    it. Every download path reports progress through that callback several times
+    a second, so it is the one place to block (pause) or raise JobCancelled
+    (cancel) without touching yt-dlp, ffmpeg or the HTTP loops. Pausing only
+    holds at the 'downloading' stage; a conversion already running can't be
+    suspended, only cancelled (at its next progress report)."""
+
+    def __init__(self, request_id, send):
+        self.request_id = request_id
+        self.send = send  # the real progress sink (browser message + job file)
+        self.cancelled = False
+        self._percent = 0
+        self._checked = 0.0
+        self._state = ''
+
+    def _poll(self, force=False):
+        now = time.monotonic()
+        if force or now - self._checked >= CONTROL_POLL_SECONDS:
+            self._checked = now
+            self._state = read_control(self.request_id)
+        return self._state
+
+    def _cancel(self):
+        self.cancelled = True
+        raise errors.JobCancelled()
+
+    def _hold(self):
+        self.send(status='paused', percent=self._percent)
+        deadline = time.monotonic() + PAUSE_LIMIT_SECONDS
+        while True:
+            time.sleep(CONTROL_POLL_SECONDS)
+            state = self._poll(force=True)
+            if state == 'cancel' or time.monotonic() > deadline:
+                self._cancel()
+            if state != 'pause':
+                return
+
+    def progress(self, **kwargs):
+        status = kwargs.get('status')
+        if status in ('finished', 'error'):
+            # A cancelled job ends as 'cancelled' whatever the code underneath
+            # reported (some paths swallow the exception and carry on).
+            self.send(**({'status': 'cancelled'} if self.cancelled else kwargs))
+            return
+        if self.cancelled:
+            raise errors.JobCancelled()
+        state = self._poll()
+        if state == 'cancel':
+            self._cancel()
+        if state == 'pause' and status == 'downloading':
+            self._hold()
+        if 'percent' in kwargs:
+            self._percent = kwargs['percent']
+        self.send(**kwargs)
 
 
 def sweep_stale_jobs(max_age_seconds=6 * 3600):
@@ -196,31 +291,40 @@ def handle_download(msg):
     title = msg.get('title') or None
     download_dir = msg.get('downloadDir') or None  # one-off override; doesn't touch the saved default
 
-    def on_progress(**kwargs):
+    source = msg.get('source') or 'youtube'
+
+    def report(**kwargs):
+        write_job_file(request_id, kwargs)  # first: whoever sees the message can rely on the file
         send_message(dict(kwargs, type='jobUpdate', requestId=request_id))
-        write_job_file(request_id, kwargs)
 
-    on_progress(status='starting', percent=0)
-
-    if msg.get('source') == 'twitter':
-        core.run_twitter_download(url, msg.get('options'), on_progress, ffmpeg_location=FFMPEG_LOCATION,
-                                  download_dir=download_dir, title=title, cookies=msg.get('cookies'))
-        return
-
-    if msg.get('source') == 'web':
-        web.run_web_download(msg.get('items'), msg.get('pageUrl') or url, on_progress, ffmpeg_location=FFMPEG_LOCATION,
-                             download_dir=download_dir, title=title, subfolder=bool(msg.get('subfolder')),
-                             convert=msg.get('convert'))
-        return
-
+    gate = JobGate(request_id, report)
+    on_progress = gate.progress
+    started = time.time()
+    remove_control(request_id)
     try:
-        core.validate_download_request(url, mode, quality, msg.get('audio'))
-    except ValueError as e:
-        on_progress(status='error', **errors.classify_error(e, 'youtube'))
-        return
-
-    core.run_download(url, mode, quality, on_progress, ffmpeg_location=FFMPEG_LOCATION, download_dir=download_dir, title=title,
-                      audio=msg.get('audio'), codec=msg.get('codec'), container=msg.get('container'))
+        on_progress(status='starting', percent=0)
+        if source == 'twitter':
+            core.run_twitter_download(url, msg.get('options'), on_progress, ffmpeg_location=FFMPEG_LOCATION,
+                                      download_dir=download_dir, title=title, cookies=msg.get('cookies'))
+        elif source == 'web':
+            web.run_web_download(msg.get('items'), msg.get('pageUrl') or url, on_progress, ffmpeg_location=FFMPEG_LOCATION,
+                                 download_dir=download_dir, title=title, subfolder=bool(msg.get('subfolder')),
+                                 convert=msg.get('convert'))
+        else:
+            try:
+                core.validate_download_request(url, mode, quality, msg.get('audio'))
+            except ValueError as e:
+                on_progress(status='error', **errors.classify_error(e, 'youtube'))
+                return
+            core.run_download(url, mode, quality, on_progress, ffmpeg_location=FFMPEG_LOCATION, download_dir=download_dir, title=title,
+                              audio=msg.get('audio'), codec=msg.get('codec'), container=msg.get('container'),
+                              with_audio=msg.get('withAudio', True) is not False, clip=msg.get('clip'))
+    except errors.JobCancelled:
+        on_progress(status='error')  # reported as 'cancelled' by the gate
+    finally:
+        if gate.cancelled and source != 'twitter':  # Twitter jobs work in a temp folder that is always removed
+            core.discard_partials(core.ensure_download_dir(download_dir, source), started)
+        remove_control(request_id)
 
 
 def handle_reveal_file(msg):
@@ -251,6 +355,27 @@ def handle_get_job_status(msg):
         send_message(dict(data, type='jobStatusResult', requestId=request_id, ok=True))
     except (OSError, ValueError):
         send_message({'type': 'jobStatusResult', 'requestId': request_id, 'ok': False, 'error': 'not found'})
+
+
+def handle_control_job(msg):
+    """Pause, resume or cancel a running download (see JobGate). The download
+    may live in another host process, so this only writes its control file."""
+    request_id = msg.get('requestId')
+    job_id = msg.get('jobId') or ''
+    action = msg.get('action')
+    try:
+        if action not in ('pause', 'resume', 'cancel') or not JOB_ID_RE.match(job_id):
+            raise ValueError('Unknown download control request.')
+        try:
+            status = read_job_file(job_id).get('status')
+        except (OSError, ValueError):
+            status = None
+        if status is None or status in ('finished', 'error', 'cancelled'):
+            raise ValueError('This download is no longer running.')
+        write_control(job_id, action)
+        send_message({'type': 'controlJobResult', 'requestId': request_id, 'ok': True})
+    except Exception as e:
+        send_message({'type': 'controlJobResult', 'requestId': request_id, 'ok': False, 'error': str(e)})
 
 
 def handle_browse_folder(msg):
@@ -416,6 +541,8 @@ def main():
                 handle_reveal_file(msg)
             elif msg_type == 'getJobStatus':
                 handle_get_job_status(msg)
+            elif msg_type == 'controlJob':
+                handle_control_job(msg)
             elif msg_type == 'listDir':
                 handle_list_dir(msg)
             elif msg_type == 'makeDir':

@@ -1,5 +1,5 @@
 // YouTube (and any other yt-dlp site) panel: video download with a resolution
-// picker, and a music-style audio download with format choice, automatic
+// picker, a clip of a video (trim timeline + resolution), and a music-style audio download with format choice, automatic
 // tags + cover art and an optional metadata editor. Registers itself into
 // popup.js's `panels` registry.
 
@@ -18,6 +18,8 @@
   };
 
   const CONTAINERS = ['mp4', 'mkv', 'webm'];
+  const CLIP_DEFAULT_SECONDS = 10; // initial length of a new clip
+  const CLIP_MIN_AHEAD = 1; // a playhead closer than this to the end starts the clip at 0 instead
 
   const el = {
     container: $('yt-container'),
@@ -27,16 +29,23 @@
     cover: $('yt-cover'), coverEmpty: $('yt-cover-empty'), mcTitle: $('mc-title'), mcArtist: $('mc-artist'), mcAlbum: $('mc-album'), mcBadge: $('mc-badge'),
     afmt: $('yt-afmt'), aqRow: $('yt-aq-row'), aquality: $('yt-aquality'),
     tags: $('yt-tags'), square: $('yt-square'), squareRow: $('yt-square-row'), edit: $('yt-edit'), editRow: $('yt-edit-row'),
-    form: $('yt-meta-form'), coverFile: $('yt-cover-file'),
+    form: $('yt-meta-form'), coverFile: $('yt-cover-file'), withAudio: $('yt-with-audio'),
+    codecRow: $('yt-codec-row'), clipBox: $('yt-clip'), clipLen: $('yt-clip-len'), clipEst: $('yt-clip-est'),
   };
   const fields = Object.fromEntries(META_FIELDS.map((k) => [k, $('mf-' + k)]));
 
   let info = null;
-  let kind = 'video';
+  let kind = 'video'; // 'video' | 'audio' | 'clip'
   let prefs = { format: 'mp3', quality: 'best', tags: true, square: true };
   let videoCodec = 'h264';
   let container = 'mp4';
   let cover = { source: 'thumbnail', dataUrl: '' };
+
+  // The Clip tab's trim timeline; the sizes shown on the page follow the clip length.
+  const trimCtl = createTrim({
+    range: $('yt-range'), start: $('yt-clip-start'), end: $('yt-clip-end'), startText: $('yt-clip-start-t'), endText: $('yt-clip-end-t'),
+    onChange: () => renderClip(),
+  });
 
   const formats = () => info.audio_formats || [];
   const currentFormat = () => formats().find((f) => f.id === prefs.format) || formats()[0];
@@ -48,11 +57,13 @@
 
   // WebM only carries VP9/AV1 (+ Opus), so it narrows the codec list and is
   // unavailable when the page offers neither. MP4/MKV take any offered codec.
+  // A clip is re-encoded, so it can always be WebM (and has no codec choice).
   function renderVideoOptions() {
     const offered = info.video_codecs && info.video_codecs.length ? info.video_codecs : ['h264'];
     const webmCodecs = offered.filter((c) => c !== 'h264' && VIDEO_CODECS[c]);
-    el.container.querySelector('[data-container="webm"]').disabled = !webmCodecs.length;
-    if (container === 'webm' && !webmCodecs.length) container = 'mp4';
+    const webmOk = webmCodecs.length > 0 || kind === 'clip';
+    el.container.querySelector('[data-container="webm"]').disabled = !webmOk;
+    if (container === 'webm' && !webmOk) container = 'mp4';
     el.container.querySelectorAll('[data-container]').forEach((b) => b.setAttribute('aria-selected', String(b.dataset.container === container)));
 
     const codecs = (container === 'webm' ? webmCodecs : offered).filter((c) => VIDEO_CODECS[c]);
@@ -62,7 +73,7 @@
       opt.textContent = VIDEO_CODECS[c].label;
       return opt;
     }));
-    if (!codecs.includes(videoCodec)) videoCodec = codecs[0];
+    if (codecs.length && !codecs.includes(videoCodec)) videoCodec = codecs[0];
     el.codec.value = videoCodec;
   }
 
@@ -111,7 +122,7 @@
     el.mcArtist.textContent = el.tags.checked ? (m.artist || 'Unknown artist') : 'Tags off';
     el.mcAlbum.textContent = el.tags.checked ? [m.album, (m.date || '').slice(0, 4)].filter(Boolean).join(' · ') : '';
     el.mcBadge.textContent = fmt ? fmt.label + (isLossy(fmt) && el.aquality.value ? ' · ' + qualityName(el.aquality.value, fmt) : '') : '';
-    el.title.placeholder = kind === 'audio' ? audioName() : info.title || '';
+    el.title.placeholder = kind === 'audio' ? audioName() : (info.title || '') + (kind === 'clip' ? ' (clip)' : '');
   }
 
   function qualityName(q, fmt) {
@@ -148,8 +159,30 @@
     });
   }
 
+  // Resolution list with sizes; for a clip the size is scaled to the clip length.
+  function labelQualities() {
+    const { start, end } = trimCtl.get();
+    const scale = kind === 'clip' && info.duration ? (end - start) / info.duration : 1;
+    (info.video_qualities || []).forEach((q, i) => {
+      const size = formatBytes(q.estimated_bytes && q.estimated_bytes * scale);
+      el.mp4Quality.options[i].textContent = q.height + 'p' + (size ? ' · ' + (scale < 1 ? '~' : '') + size : '');
+    });
+  }
+
+  function renderClip() {
+    if (!info) return;
+    const { start, end } = trimCtl.get();
+    const length = end - start;
+    el.clipLen.textContent = formatTime(start) + ' → ' + formatTime(end) + ' · ' + length.toFixed(1) + ' s';
+    labelQualities();
+    const q = (info.video_qualities || []).find((x) => String(x.height) === el.mp4Quality.value);
+    const bytes = q && q.estimated_bytes && info.duration ? q.estimated_bytes * length / info.duration : null;
+    el.clipEst.textContent = [q && q.height + 'p', bytes && '~' + formatBytes(bytes), length.toFixed(1) + ' s'].filter(Boolean).join(' · ');
+  }
+
   function render() {
     setKind();
+    if (kind === 'clip') renderClip();
     el.editRow.classList.toggle('hidden', !el.tags.checked);
     el.squareRow.classList.toggle('hidden', !el.tags.checked);
     el.form.classList.toggle('hidden', !(el.tags.checked && el.edit.checked));
@@ -162,7 +195,9 @@
     el.kind.querySelectorAll('[role="tab"]').forEach((tab) => {
       tab.setAttribute('aria-selected', String(tab.dataset.kind === kind));
     });
-    el.video.classList.toggle('hidden', kind !== 'video');
+    el.video.classList.toggle('hidden', kind === 'audio'); // Video and Clip share the picture + resolution/format rows
+    el.clipBox.classList.toggle('hidden', kind !== 'clip');
+    el.codecRow.classList.toggle('hidden', kind === 'clip');
     el.audio.classList.toggle('hidden', kind !== 'audio');
   }
 
@@ -174,9 +209,9 @@
     return h ? h + ':' + pad(m) + ':' + pad(s % 60) : m + ':' + pad(s % 60);
   }
 
-  function populate(data) {
+  function populate(data, playhead) {
     // An older native host sends neither tags nor audio formats; keep the panel usable.
-    const outdated = !data.audio_formats || !data.meta;
+    const outdated = !data.audio_formats || !data.meta || !data.clip;
     info = Object.assign({ audio_formats: [], meta: { title: data.title || '' } }, data);
     noteOutdatedHost('youtube', outdated);
     el.title.value = '';
@@ -188,22 +223,22 @@
     el.vChannel.textContent = info.channel || '';
 
     el.mp4Quality.innerHTML = '';
-    (info.video_qualities || []).forEach((q) => {
-      const opt = document.createElement('option');
-      opt.value = q.height;
-      const size = formatBytes(q.estimated_bytes);
-      opt.textContent = q.height + 'p' + (size ? ' · ' + size : '');
-      el.mp4Quality.appendChild(opt);
-    });
-    if (el.mp4Quality.options.length === 0) {
-      const opt = document.createElement('option');
-      opt.value = '';
-      opt.textContent = 'no video streams found';
-      el.mp4Quality.appendChild(opt);
-    }
+    (info.video_qualities || []).forEach((q) => el.mp4Quality.appendChild(new Option('', q.height)));
+    if (el.mp4Quality.options.length === 0) el.mp4Quality.appendChild(new Option('no video streams found', ''));
+
+    // Clips need an up-to-date host and a known length.
+    const clipTab = el.kind.querySelector('[data-kind="clip"]');
+    const canClip = !!info.clip && !!info.duration;
+    clipTab.disabled = !canClip;
+    clipTab.title = canClip ? '' : !info.clip ? 'Update the nickel.tools native host to enable clips' : "This video's length is unknown";
+    if (!canClip && kind === 'clip') kind = 'video';
+    // The clip starts where the video is playing now (0 when unknown or nearly at the end).
+    const from = playhead > 0 && playhead < (info.duration || 0) - CLIP_MIN_AHEAD ? Math.round(playhead * 10) / 10 : 0;
+    trimCtl.reset(info.duration || 0, { start: from, end: from + CLIP_DEFAULT_SECONDS });
 
     // Only codecs the page actually offers (an older host sends none: H.264 only).
     renderVideoOptions();
+    labelQualities();
 
     // Without an audio-capable ffmpeg there is nothing to offer under Audio.
     const audioTab = el.kind.querySelector('[data-kind="audio"]');
@@ -228,8 +263,11 @@
   // ------------------------------------------------------------- output
 
   function output() {
+    if (kind === 'clip') {
+      return { label: container.toUpperCase() + ' clip', ext: '.' + container, hint: 'Only the selected part is downloaded' + (el.withAudio.checked ? '.' : ', without audio.') };
+    }
     if (kind === 'video') {
-      return { label: container.toUpperCase(), ext: '.' + container, hint: 'Video with audio.' };
+      return { label: container.toUpperCase(), ext: '.' + container, hint: el.withAudio.checked ? 'Video with audio.' : 'Video only, no audio.' };
     }
     const fmt = currentFormat();
     const bytes = !isLossy(fmt) ? estimateBytes(fmt) : null;
@@ -265,6 +303,8 @@
     const tab = e.target.closest('[role="tab"]');
     if (!tab || tab.disabled) return;
     kind = tab.dataset.kind;
+    renderVideoOptions();
+    labelQualities();
     savePrefs();
     render();
   });
@@ -297,7 +337,11 @@
   $('yt-cover-reset').addEventListener('click', () => { cover = { source: 'thumbnail', dataUrl: '' }; render(); });
   $('yt-cover-none').addEventListener('click', () => { cover = { source: 'none', dataUrl: '' }; render(); });
   el.coverFile.addEventListener('change', () => { loadCoverFile(el.coverFile.files[0]); el.coverFile.value = ''; });
-  el.mp4Quality.addEventListener('change', refreshOutput);
+  el.mp4Quality.addEventListener('change', () => {
+    if (kind === 'clip') renderClip();
+    refreshOutput();
+  });
+  el.withAudio.addEventListener('change', refreshOutput);
   el.codec.addEventListener('change', () => {
     videoCodec = el.codec.value;
     savePrefs();
@@ -327,8 +371,9 @@
       loadPrefs(['ytKind', 'ytAudio', 'ytCodec', 'ytContainer']),
       browser.storage.local.get('defaultContainer'),
       send({ type: 'getFormats', url }),
-    ]).then(([stored, defaults, data]) => {
-      kind = stored.ytKind === 'audio' ? 'audio' : 'video';
+      send({ type: 'getPlayhead', tabId: currentTabId }).then((res) => res.time, () => null),
+    ]).then(([stored, defaults, data, playhead]) => {
+      kind = ['audio', 'clip'].includes(stored.ytKind) ? stored.ytKind : 'video';
       videoCodec = VIDEO_CODECS[stored.ytCodec] ? stored.ytCodec : 'h264';
       // Last used format; else the Settings default; a saved VP9/AV1 pick from
       // before this option existed keeps meaning WebM.
@@ -336,11 +381,15 @@
         : VIDEO_CODECS[videoCodec].ext === 'webm' ? 'webm'
           : CONTAINERS.includes(defaults.defaultContainer) ? defaults.defaultContainer : 'mp4';
       prefs = Object.assign(prefs, stored.ytAudio);
-      populate(data);
+      populate(data, playhead);
     }),
     payload() {
       const title = el.title.value.trim() || el.title.placeholder;
-      if (kind === 'video') return { mode: 'mp4', quality: el.mp4Quality.value, codec: videoCodec, container, title };
+      if (kind === 'clip') {
+        const { start, end } = trimCtl.get();
+        return { mode: 'mp4', quality: el.mp4Quality.value, codec: videoCodec, container, withAudio: el.withAudio.checked, title, clip: { start, end } };
+      }
+      if (kind === 'video') return { mode: 'mp4', quality: el.mp4Quality.value, codec: videoCodec, container, withAudio: el.withAudio.checked, title };
       const fmt = currentFormat();
       const quality = isLossy(fmt) ? el.aquality.value : undefined;
       const tags = el.tags.checked;

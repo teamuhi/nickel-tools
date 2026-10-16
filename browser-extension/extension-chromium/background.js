@@ -118,10 +118,11 @@ function pollJobStatus(id) {
         // id. Only the actual status fields belong in the job.
         const { type, ok, requestId: _wrapperRequestId, ...statusFields } = res;
         Object.assign(job, statusFields);
+        settlePending(job);
         persistState();
         broadcast(job.tabUrl);
         updateBadge();
-        if (job.status === 'finished' || job.status === 'error') {
+        if (isEnded(job.status)) {
           stopPolling(id);
           jobDone(job);
         }
@@ -215,8 +216,9 @@ function failure(err) {
   return { ok: false, error: err.message, errorCode: err.code, errorHint: err.hint, errorDetail: err.detail };
 }
 
-const isActive = (job) => job.status !== 'finished' && job.status !== 'error'; // running or queued
+const isActive = (job) => job.status !== 'finished' && job.status !== 'error' && job.status !== 'cancelled'; // running (also paused) or queued
 const isRunning = (job) => isActive(job) && job.status !== 'queued';
+const isEnded = (status) => status === 'finished' || status === 'error' || status === 'cancelled';
 const jobNotificationId = (job) => (job.id ? 'job-' + job.id : undefined);
 const byQueuedAt = (a, b) => a.queuedAt - b.queuedAt;
 
@@ -226,7 +228,7 @@ function createNotification(id, options, callback) {
   chrome.notifications.create(...args, callback);
 }
 
-const STATUS_WORDS = { starting: 'Starting', downloading: 'Downloading', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+const STATUS_WORDS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
 const BADGE_COLORS = { active: '#111111', finished: '#346538', error: '#9f2f2d' };
 const BADGE_FLASH_MS = { finished: 5000, error: 10000 };
 const DEFAULT_TITLE = 'Download media from this page';
@@ -305,6 +307,14 @@ const finishedJobs = new Set();
 async function jobDone(job) {
   if (finishedJobs.has(job.id)) return;
   finishedJobs.add(job.id);
+  if (job.status === 'cancelled') { // the user's own doing: no badge flash, notification or history entry
+    chrome.notifications.clear(jobNotificationId(job));
+    updateBadge();
+    prune();
+    persistState();
+    pumpQueue();
+    return;
+  }
   const isError = job.status === 'error';
   flashBadge(isError ? 'error' : 'finished');
   updateBadge();
@@ -369,7 +379,7 @@ function broadcast(tabUrl) {
 }
 
 function onPortMessage(msg) {
-  if (msg.type === 'pong' || msg.type === 'formatsResult' || msg.type === 'tweetResult' || msg.type === 'translateResult' || msg.type === 'configResult' || msg.type === 'jobStatusResult' || msg.type === 'browseFolderResult' || msg.type === 'openPathResult' || msg.type === 'revealFileResult') {
+  if (msg.type === 'pong' || msg.type === 'formatsResult' || msg.type === 'tweetResult' || msg.type === 'translateResult' || msg.type === 'configResult' || msg.type === 'controlJobResult' || msg.type === 'jobStatusResult' || msg.type === 'browseFolderResult' || msg.type === 'openPathResult' || msg.type === 'revealFileResult') {
     const pending = pendingRequests[msg.requestId];
     if (!pending) return;
     delete pendingRequests[msg.requestId];
@@ -389,10 +399,11 @@ function onPortMessage(msg) {
       return;
     }
     Object.assign(job, msg);
+    settlePending(job);
     persistState();
     broadcast(job.tabUrl);
     updateBadge();
-    if (msg.status === 'finished' || msg.status === 'error') jobDone(job);
+    if (isEnded(msg.status)) jobDone(job);
   }
 }
 
@@ -429,6 +440,13 @@ function browseFolder(source) {
   return sendRequest({ type: 'browseFolder', requestId: newRequestId(), source }).then((res) => res.path || null);
 }
 
+// `pending` is a pause/resume/cancel request waiting for the host to act on it; it is dropped once the
+// job's status shows the request took effect (a cancel stays until the job ends).
+function settlePending(job) {
+  if (job.pending === 'pause' && job.status !== 'downloading' && job.status !== 'starting') delete job.pending;
+  else if (job.pending === 'resume' && job.status !== 'paused') delete job.pending;
+}
+
 // Strips what the popup must not see (the pending download message).
 function publicJob(job) {
   if (!job) return null;
@@ -444,7 +462,7 @@ function latestJobFor(tabUrl) {
 function queueSnapshot() {
   const all = Object.values(jobs);
   return [...all.filter(isRunning), ...all.filter((job) => job.status === 'queued').sort(byQueuedAt)]
-    .map(({ id, title, source, mode, status, percent, tabUrl }) => ({ id, title, source, mode, status, percent, tabUrl }));
+    .map(({ id, title, source, mode, status, percent, tabUrl, pending }) => ({ id, title, source, mode, status, percent, tabUrl, pending }));
 }
 
 // Keeps running and queued jobs plus the newest finished/failed one per tab
@@ -600,6 +618,16 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
+  // Where the page's video is playing, so a clip can start there (null: no video / no access).
+  if (message.type === 'getPlayhead') {
+    chrome.scripting.executeScript({
+      target: { tabId: message.tabId },
+      func: () => { const v = document.querySelector('video.html5-main-video') || document.querySelector('video'); return v && isFinite(v.currentTime) ? v.currentTime : null; },
+    })
+      .then((res) => sendResponse({ time: res && res[0] && res[0].result }), () => sendResponse({ time: null }));
+    return true;
+  }
+
   if (message.type === 'scanPage') {
     chrome.scripting.executeScript({ target: { tabId: message.tabId, allFrames: true }, files: ['scan.js'] })
       .then((res) => sendResponse(mergeScans(res.map((r) => r.result))))
@@ -619,7 +647,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     return true;
   }
 
-  // Only a job still waiting can be removed; the host has no way to cancel a running one.
+  // Pause / resume / cancel the running download (the host acts on it at its next progress report).
+  if (message.type === 'controlJob') {
+    stateLoaded.then(() => {
+      const job = jobs[message.id];
+      if (!job || !isRunning(job) || !['pause', 'resume', 'cancel'].includes(message.action)) {
+        return { ok: false, error: 'This download is no longer running.' };
+      }
+      return sendRequest({ type: 'controlJob', requestId: newRequestId(), jobId: job.id, action: message.action }, HOST_TIMEOUT_MS)
+        .then(() => {
+          job.pending = message.action;
+          persistState();
+          broadcast(job.tabUrl);
+          return { ok: true };
+        });
+    }).then(sendResponse, (err) => sendResponse(failure(err)));
+    return true;
+  }
+
+  // Only a job still waiting can be removed here; a running one is stopped with controlJob.
   if (message.type === 'removeQueued') {
     stateLoaded.then(() => {
       const job = jobs[message.id];

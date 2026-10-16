@@ -1354,7 +1354,7 @@ video.hero-media {
   outline-offset: 1px;
 }
 
-/* GIF settings card: trim toggle, clip range + times, frame rate/speed/size, size estimate. */
+/* GIF settings card (also the YouTube clip card): trim toggle, clip range + times, frame rate/speed/size, size estimate. */
 .gif-part {
   padding: var(--s3);
   border-top: 1px solid var(--border);
@@ -1418,7 +1418,7 @@ video.hero-media {
   color: var(--text-muted);
 }
 
-.gif-foot #tw-gif-est {
+.gif-foot > :last-child {
   color: var(--text);
   font-variant-numeric: tabular-nums;
 }
@@ -2386,6 +2386,44 @@ video.hero-media {
 }
 
 #queue-list {
-  max-height: 150px;
+  max-height: 176px;
   overflow-y: auto;
+}
+
+/* Per-download progress under the meta line; muted while the download is paused. */
+.li-bar {
+  height: 3px;
+  margin-top: 5px;
+  overflow: hidden;
+  background: var(--border);
+  border-radius: 2px;
+}
+
+.li-bar > div {
+  width: 100%;
+  height: 100%;
+  background: var(--accent);
+  transform-origin: left;
+}
+
+.is-paused .li-bar > div {
+  background: var(--text-muted);
+}
+
+.is-paused .li-title {
+  color: var(--text-muted);
+}
+
+/* First click on Cancel only arms it (a second click confirms). */
+.icon-mini.is-armed:not(:disabled) {
+  color: var(--error-text);
+  background: var(--error-bg);
+}
+
+.queue-note {
+  padding: var(--s2) var(--s3);
+  font-size: var(--fs-xs);
+  color: var(--error-text);
+  border-top: 1px solid var(--border);
+  overflow-wrap: anywhere;
 }

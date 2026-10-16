@@ -48,6 +48,7 @@ AUDIO_FORMATS = {
 }
 
 MAX_META_LEN = 500
+MAX_CLIP_END = 1e6  # seconds; a sanity bound on the Clip tab's range
 MAX_COVER_DATA_URL = 14_000_000  # ~10 MB of image
 
 
@@ -101,6 +102,31 @@ def ensure_download_dir(download_dir=None, source='youtube'):
     d = download_dir or get_download_dir(source)
     os.makedirs(d, exist_ok=True)
     return d
+
+
+# Leftovers of an interrupted yt-dlp download: .part / .ytdl / .temp files and the
+# per-format intermediates (name.f137.mp4) that are merged into the final file.
+_PARTIAL_RE = re.compile(r'(\.(part|ytdl|temp|tmp)(-Frag\d+)?|\.f(\d+|hls|dash|http)[\w-]*\.\w+|\.resized\.\w+)$', re.IGNORECASE)
+
+
+def discard_partials(directory, since):
+    """Deletes half-downloaded files that appeared in `directory` (or in a
+    sub-folder made for the job) at or after `since` (epoch seconds), so a
+    cancelled download leaves nothing behind. Finished files are never touched."""
+    since -= 2  # file systems round timestamps
+    try:
+        entries = list(os.scandir(directory))
+    except OSError:
+        return
+    for entry in entries:
+        try:
+            if entry.is_dir(follow_symlinks=False):
+                if entry.stat().st_mtime >= since:
+                    discard_partials(entry.path, since)
+            elif _PARTIAL_RE.search(entry.name) and entry.stat().st_mtime >= since:
+                os.remove(entry.path)
+        except OSError:
+            pass
 
 
 def _format_size(fmt):
@@ -187,9 +213,12 @@ def _codec_available(info, codec, height):
     return _has_opus(info) and any(_is_codec(f, codec) and (f.get('height') or 0) and f['height'] <= limit for f in info.get('formats') or [])
 
 
-def video_format_selector(codec, height):
+def video_format_selector(codec, height, with_audio=True):
     """yt-dlp format string for `codec` at up to `height`p; always ends with a
-    codec-agnostic fallback."""
+    codec-agnostic fallback. Without audio only video-only streams are
+    preferred (a muxed last resort is stripped after the download)."""
+    if not with_audio:
+        return "bv[height<={h}][vcodec~='{r}']/bv[height<={h}]/best[height<={h}]".format(h=height, r=VIDEO_CODECS[codec][1])
     legacy = ('bestvideo[height<={h}][ext=mp4]+bestaudio[ext=m4a]/'
               'bestvideo[height<={h}]+bestaudio/best[height<={h}]').format(h=height)
     if codec == 'h264':
@@ -335,6 +364,7 @@ def fetch_formats(url, ffmpeg_location=None):
                           for fid, f in AUDIO_FORMATS.items() if render.has_encoder(f['encoder'], ffmpeg_location)],
         'meta': auto_meta(info),
         'best_audio_kbps': best_audio_kbps(info),
+        'clip': True,  # this host can cut clips (the popup hides the Clip tab otherwise)
         'ytdlp': errors.ytdlp_version_info(),
     }
 
@@ -365,6 +395,20 @@ def _normalize_audio(audio):
         'meta': {k: _clip(meta.get(k)) for k in audio_tags.META_KEYS} if isinstance(meta, dict) else None,
         'cover': {'source': source, 'square': cover.get('square', True) is not False, 'dataUrl': data_url if source == 'custom' else ''},
     }
+
+
+def normalize_clip(clip):
+    """{'start', 'end'} in seconds from the popup's Clip tab, or None for the
+    whole video. Raises ValueError (user-facing message) for a bad range."""
+    if not clip:
+        return None
+    try:
+        start, end = float(clip.get('start') or 0), float(clip.get('end') or 0)
+    except (AttributeError, TypeError, ValueError):
+        raise ValueError('clip start and end must be numbers')
+    if start < 0 or end <= start or end > MAX_CLIP_END:
+        raise ValueError('clip end time must be after the start time')
+    return {'start': start, 'end': end}
 
 
 def validate_download_request(url, mode, quality, audio=None):
@@ -400,8 +444,36 @@ def make_progress_hook(on_progress):
     return hook
 
 
-def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download_dir=None, title=None, audio=None, codec=None, container=None):
+CLIP_PROTOCOLS = ('http', 'https', 'm3u8', 'm3u8_native')  # streams ffmpeg can read straight from the URL
+
+
+def _download_clip(url, selector, clip, height, ext, with_audio, final_path, on_progress, ffmpeg_location):
+    """Saves clip['start']..clip['end'] of `url` to `final_path`: yt-dlp only
+    resolves the stream URLs, ffmpeg fetches and re-encodes just that part.
+    Written to a .part file first so a cancelled clip leaves nothing behind."""
+    on_progress(status='downloading', percent=0)
+    opts = {'quiet': True, 'no_warnings': True, 'skip_download': True, 'noplaylist': True, 'format': selector}
+    with yt_dlp.YoutubeDL(opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+    streams = info.get('requested_formats') or [info]
+    if any(s.get('protocol') not in CLIP_PROTOCOLS or s.get('fragments') for s in streams):
+        raise ValueError("This video can't be clipped; download it whole instead.")
+    duration = info.get('duration')
+    if duration and clip['start'] >= duration:
+        raise ValueError('The clip starts after the end of the video (%s s).' % round(duration))
+    end = min(clip['end'], duration) if duration else clip['end']
+    part = final_path + '.part'
+    try:
+        render.clip_video([{'url': s['url'], 'headers': s.get('http_headers')} for s in streams], part, clip['start'], end, height, ext, with_audio, on_progress, ffmpeg_location)
+        os.replace(part, final_path)
+    finally:
+        if os.path.exists(part):
+            os.remove(part)
+
+
+def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download_dir=None, title=None, audio=None, codec=None, container=None, with_audio=True, clip=None):
     """Downloads/converts `url` per `mode` ('mp4' or 'audio') / `quality`.
+    `with_audio` False saves a silent video (mode 'mp4' only).
     `codec` (a key of VIDEO_CODECS, default H.264/MP4) is the preferred video
     codec; VP9/AV1 save as .webm unless `container` (mp4, mkv or webm) says
     otherwise, and fall back to H.264 when unavailable. WebM only carries
@@ -412,6 +484,9 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
     status='tagging'), then a final call: status='finished', percent=100,
     filename=..., path=... (+ warning=... if tags/cover couldn't be written)
     or status='error', error=....
+
+    `clip` ({start, end} seconds, mode 'mp4' only) saves just that part of the
+    video, cut on exact frames; only the section is downloaded.
 
     `audio` is {format, quality, tags, meta, cover} (see _normalize_audio).
     `ffmpeg_location` lets a frozen/bundled host point at its own bundled
@@ -429,6 +504,7 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
     """
     try:
         mode, quality, audio = validate_download_request(url, mode, quality, audio)
+        clip = normalize_clip(clip) if mode == 'mp4' else None
     except ValueError as e:
         on_progress(status='error', **errors.classify_error(e, 'youtube'))
         return
@@ -438,7 +514,9 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
     warning = None
 
     container = container if container in VIDEO_CONTAINERS else None
-    webm_wanted = mode == 'mp4' and container == 'webm'
+    if clip:
+        codec = DEFAULT_VIDEO_CODEC  # a clip is re-encoded, so the source stream's codec doesn't matter
+    webm_wanted = mode == 'mp4' and container == 'webm' and not clip
     if webm_wanted and codec == DEFAULT_VIDEO_CODEC:
         codec = 'vp9'  # WebM can't hold H.264; try VP9, falling back to MP4/H.264 below
 
@@ -464,6 +542,14 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
     final_path = dedupe_path(os.path.join(target_dir, sanitize_filename(title, restricted=False) + '.' + ext))
     outtmpl = os.path.splitext(final_path)[0] + '.%(ext)s'
 
+    if clip:
+        try:
+            _download_clip(url, video_format_selector(codec, quality), clip, int(quality), ext, with_audio, final_path, on_progress, ffmpeg_location)
+            on_progress(status='finished', percent=100, filename=os.path.basename(final_path), path=final_path)
+        except Exception as e:
+            on_progress(status='error', **errors.classify_error(e, 'youtube'))
+        return
+
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
@@ -481,8 +567,11 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
         ydl_opts['ffmpeg_location'] = ffmpeg_location
 
     if mode == 'mp4':
-        ydl_opts['format'] = video_format_selector(codec, quality)
+        ydl_opts['format'] = video_format_selector(codec, quality, with_audio)
         ydl_opts['merge_output_format'] = ext
+        if not with_audio:
+            # A lone video stream isn't merged, so remux it into the chosen container.
+            ydl_opts['postprocessors'] = [{'key': 'FFmpegVideoRemuxer', 'preferedformat': ext}]
     else:
         pp = {'key': 'FFmpegExtractAudio', 'preferredcodec': AUDIO_FORMATS[audio['format']]['codec']}
         if audio['format'] == 'mp3':
@@ -496,6 +585,11 @@ def run_download(url, mode, quality, on_progress, ffmpeg_location=None, download
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
         done = {'filename': os.path.basename(final_path), 'path': final_path}
+        if mode == 'mp4' and not with_audio and info.get('acodec') not in (None, 'none'):
+            # Only a muxed stream was available: drop its audio track.
+            silent = os.path.splitext(final_path)[0] + '.silent.' + ext
+            render.strip_audio(final_path, silent, info.get('duration'), on_progress, ffmpeg_location)
+            os.replace(silent, final_path)
         if audio and audio['tags']:
             on_progress(status='tagging', percent=100)
             warning = _tag_audio(final_path, audio, info)
@@ -572,6 +666,7 @@ def validate_twitter_request(url, options):
         'format': fmt,
         'mediaIndex': int(_num(options.get('mediaIndex'), 0, 0, 15)),
         'quality': int(_num(options.get('quality'), 0, 0, 4320)) or None,
+        'audio': options.get('audio', True) is not False,
         'photoSize': options.get('photoSize') if options.get('photoSize') in twitter.PHOTO_SIZES else 'orig',
         'photoFormat': options.get('photoFormat') if options.get('photoFormat') in PHOTO_FORMATS else 'png',
         'gif': {'fps': int(_num(gif.get('fps'), 30, 5, 30)), 'speed': _num(gif.get('speed'), 1.0, 0.25, 4.0),
@@ -692,7 +787,11 @@ def _run_twitter_job(url, options, on_progress, ffmpeg_location, tmp, cookiefile
             return out, 'gif', base
         if options['quality'] and height and options['quality'] < height:
             out = os.path.join(tmp, 'scaled.mp4')
-            render.scale_video(video, out, options['quality'], item.get('duration'), on_progress, ffmpeg_location)
+            render.scale_video(video, out, options['quality'], item.get('duration'), on_progress, ffmpeg_location, options['audio'])
+            return out, 'mp4', base
+        if not options['audio']:
+            out = os.path.join(tmp, 'silent.mp4')
+            render.strip_audio(video, out, item.get('duration'), on_progress, ffmpeg_location)
             return out, 'mp4', base
         return video, 'mp4', base
 

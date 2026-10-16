@@ -97,6 +97,87 @@ function textNode(tag, className, text) {
   return node;
 }
 
+// 83.5 -> "1:23.5"
+function formatTime(seconds) {
+  const m = Math.floor(seconds / 60);
+  return m + ':' + (seconds - m * 60).toFixed(1).padStart(4, '0');
+}
+
+// Accepts "12", "12.5", "1:02", "1:02.5"; returns null if unparseable.
+function parseTime(text) {
+  const m = /^\s*(?:(\d+):)?(\d+(?:\.\d+)?)\s*$/.exec(text);
+  return m ? (m[1] ? Number(m[1]) * 60 : 0) + Number(m[2]) : null;
+}
+
+// What a Start/End box accepts: an absolute time (see parseTime), or an
+// operand that moves the box's current value: "+1000" / "-250" add or subtract
+// centiseconds (+1000 = 10 s), "+10s" / "-1.5s" seconds, "+500ms" milliseconds,
+// "+1:30" minutes:seconds. Returns seconds, or null if unparseable.
+function parseTimeInput(text, current) {
+  const m = /^\s*([+-])\s*(.*?)\s*$/.exec(text);
+  if (!m) return parseTime(text);
+  const body = m[2];
+  const unit = /^(\d+(?:\.\d+)?)\s*(ms|s)?$/i.exec(body);
+  let delta;
+  if (unit) delta = Number(unit[1]) / (unit[2] ? (unit[2].toLowerCase() === 's' ? 1 : 1000) : 100);
+  else delta = parseTime(body); // 1:30 / 1:30.5
+  return delta == null ? null : current + (m[1] === '-' ? -delta : delta);
+}
+
+// The trim timeline (two range thumbs + Start/End boxes) used by the X GIF and
+// the YouTube clip. The Start/End boxes take operands too (see parseTimeInput). It owns the { start, end } selection (tenths of a second,
+// at least `minLength` apart) and calls onChange(selection, moved) after every
+// change, `moved` being 'start' / 'end' when the user dragged or typed one.
+function createTrim({ range, start, end, startText, endText, minLength = 0.1, onChange }) {
+  let value = { start: 0, end: 0 };
+
+  function draw() {
+    const max = Number(end.max) || 1;
+    range.style.setProperty('--lo-f', value.start / max);
+    range.style.setProperty('--hi-f', value.end / max);
+    start.value = value.start;
+    end.value = value.end;
+    startText.value = formatTime(value.start);
+    endText.value = formatTime(value.end);
+  }
+
+  // Keeps start < end by at least minLength, moving whichever thumb was not touched last.
+  function set(from, to, moved) {
+    const max = Number(end.max) || 0;
+    from = Math.max(0, Math.min(from, max));
+    to = Math.max(0, Math.min(to, max));
+    if (to - from < minLength) {
+      if (moved === 'start') from = Math.max(0, to - minLength);
+      else to = Math.min(max, from + minLength);
+    }
+    value = { start: Math.round(from * 10) / 10, end: Math.round(to * 10) / 10 };
+    draw();
+    onChange(value, moved);
+  }
+
+  start.addEventListener('input', () => set(Number(start.value), value.end, 'start'));
+  end.addEventListener('input', () => set(value.start, Number(end.value), 'end'));
+  startText.addEventListener('change', () => {
+    const t = parseTimeInput(startText.value, value.start);
+    set(t == null ? value.start : t, value.end, 'start');
+  });
+  endText.addEventListener('change', () => {
+    const t = parseTimeInput(endText.value, value.end);
+    set(value.start, t == null ? value.end : t, 'end');
+  });
+
+  return {
+    get: () => value,
+    // A new media length: sizes the range and selects start..end (default: all of it).
+    reset(duration, { start: from = 0, end: to = duration } = {}) {
+      end.max = start.max = duration || 1;
+      value = { start: Math.min(from, duration), end: Math.min(to, duration) };
+      draw();
+      onChange(value);
+    },
+  };
+}
+
 const SOURCE_TILES = { youtube: 'YT', twitter: 'X', web: 'WEB' };
 
 // Constant markup only (never page text), so innerHTML is safe here.
@@ -104,6 +185,8 @@ const ICONS = {
   folder: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round" aria-hidden="true"><path d="M1.5 4.5a1 1 0 0 1 1-1h3.2l1.2 1.5h6.6a1 1 0 0 1 1 1v6.5a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1z"/></svg>',
   page: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 4h6v6M20 4l-9 9M18 14v4a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4"/></svg>',
   remove: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
+  pause: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="5" width="4" height="14" rx="1"/><rect x="14" y="5" width="4" height="14" rx="1"/></svg>',
+  play: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><path d="M7 5v14l12-7z"/></svg>',
 };
 
 function iconButton(icon, label, onClick, disabled) {
@@ -119,15 +202,26 @@ function iconButton(icon, label, onClick, disabled) {
 }
 
 // One row of the queue and history lists: source tile, title, muted meta line
-// and icon buttons. Titles come from pages, so everything is set via textContent.
-function listItem({ source, title, meta, actions = [] }) {
+// (and an optional progress bar, 0-100) and icon buttons. Titles come from pages,
+// so everything is set via textContent.
+function listItem({ source, title, meta, actions = [], progress = null, paused = false }) {
   const item = document.createElement('div');
-  item.className = 'list-item';
+  item.className = 'list-item' + (paused ? ' is-paused' : '');
   const text = document.createElement('div');
   text.className = 'li-text';
   const titleEl = textNode('div', 'li-title', title);
   titleEl.title = title;
   text.append(titleEl, textNode('div', 'li-meta', meta));
+  if (progress != null) {
+    const bar = document.createElement('div');
+    bar.className = 'li-bar';
+    bar.setAttribute('role', 'progressbar');
+    bar.setAttribute('aria-valuenow', String(Math.round(progress)));
+    const fill = document.createElement('div');
+    fill.style.transform = 'scaleX(' + Math.max(0, Math.min(100, progress)) / 100 + ')';
+    bar.append(fill);
+    text.append(bar);
+  }
   const buttons = document.createElement('div');
   buttons.className = 'li-actions';
   buttons.append(...actions);
@@ -198,7 +292,9 @@ function refreshOutput() {
 // A running job no longer blocks the buttons: another click just queues behind it.
 function syncActions() {
   const panel = panels[activeTab];
-  actionsEl.classList.toggle('hidden', panel.state !== 'ready');
+  const ready = panel.state === 'ready';
+  $('download-controls').classList.toggle('hidden', !ready);
+  actionsEl.classList.toggle('hidden', !ready && !queue.length); // the Downloads panel needs to stay reachable
   const blocked = actionsLocked || (panel.canDownload && !panel.canDownload());
   downloadBtn.disabled = blocked;
   downloadToBtn.disabled = blocked;
@@ -272,7 +368,13 @@ function renderJob(job) {
 
   const percent = job.percent || 0;
   progressBar.style.transform = 'scaleX(' + (percent / 100) + ')';
-  if (job.status === 'queued') {
+  if (job.pending === 'cancel') {
+    progressText.textContent = 'Cancelling…';
+  } else if (job.status === 'paused') {
+    progressText.textContent = 'Paused · ' + percent + '%';
+  } else if (job.status === 'cancelled') {
+    progressText.textContent = 'Cancelled';
+  } else if (job.status === 'queued') {
     const place = queue.filter((j) => j.status === 'queued').findIndex((j) => j.id === job.id) + 1;
     progressText.textContent = 'Queued' + (place ? ' · #' + place + ' in line' : '…');
   } else if (job.status === 'starting') {
@@ -299,28 +401,91 @@ function renderJob(job) {
   }
 }
 
-const STATUS_LABELS = { starting: 'Starting', downloading: 'Downloading', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+const STATUS_LABELS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+const PENDING_LABELS = { pause: 'Pausing…', resume: 'Resuming…', cancel: 'Cancelling…' };
+const CANCEL_CONFIRM_MS = 3000;
 
-function queueItem(job) {
+let cancelArmed = null; // id of the running job whose Cancel button was clicked once (it needs a second click)
+let cancelArmTimer = null;
+
+function showQueueNote(text) {
+  const note = $('queue-note');
+  note.textContent = text || '';
+  note.classList.toggle('hidden', !text);
+}
+
+// Pause / resume / cancel a running download; the host confirms with the job's next status.
+function controlJob(job, action) {
+  showQueueNote('');
+  return send({ type: 'controlJob', id: job.id, action })
+    .then(refreshJobState)
+    .catch((err) => {
+      showQueueNote(err.message + (err.hint ? ' ' + err.hint : ''));
+      return refreshJobState();
+    });
+}
+
+// Cancelling a running download throws its progress away, so the first click only arms the button.
+function cancelClicked(job) {
+  clearTimeout(cancelArmTimer);
+  if (cancelArmed !== job.id) {
+    cancelArmed = job.id;
+    cancelArmTimer = setTimeout(() => {
+      cancelArmed = null;
+      renderQueue();
+    }, CANCEL_CONFIRM_MS);
+    renderQueue();
+    return;
+  }
+  cancelArmed = null;
+  controlJob(job, 'cancel');
+}
+
+function queueItem(job, waitingPlace) {
   const waiting = job.status === 'queued';
-  const actions = waiting
-    ? [iconButton('remove', 'Remove from queue', () => send({ type: 'removeQueued', id: job.id }).then(refreshJobState).catch(() => {}))]
-    : [];
+  const paused = job.status === 'paused';
+  const armed = cancelArmed === job.id;
+  const percent = Math.round(job.percent || 0);
+  let meta;
+  let actions;
+  if (waiting) {
+    meta = 'Waiting · #' + waitingPlace + ' in line';
+    actions = [iconButton('remove', 'Remove from queue', () => send({ type: 'removeQueued', id: job.id }).then(refreshJobState).catch(() => {}))];
+  } else {
+    meta = job.pending ? PENDING_LABELS[job.pending] : armed ? 'Click × again to cancel' : (STATUS_LABELS[job.status] || 'Working') + (job.status === 'starting' ? '' : ' · ' + percent + '%');
+    const pauseBtn = paused
+      ? iconButton('play', 'Resume download', () => controlJob(job, 'resume'), !!job.pending)
+      : iconButton('pause', job.status === 'downloading' ? 'Pause download' : "Can't pause during this step", () => controlJob(job, 'pause'), !!job.pending || job.status !== 'downloading');
+    const cancelBtn = iconButton('remove', armed ? 'Click again to cancel this download' : 'Cancel download', () => cancelClicked(job), job.pending === 'cancel');
+    cancelBtn.classList.toggle('is-armed', armed);
+    actions = [pauseBtn, cancelBtn];
+  }
   return listItem({
     source: job.source,
     title: job.title || 'Download',
-    meta: waiting ? 'Waiting' : (STATUS_LABELS[job.status] || 'Working') + (job.status === 'starting' ? '' : ' · ' + Math.round(job.percent || 0) + '%'),
+    meta,
     actions,
+    progress: waiting ? null : percent,
+    paused,
   });
 }
 
-// Collapsible list in the footer; hidden while nothing is queued or running.
+// The Downloads panel in the footer: running (or paused) and waiting jobs with
+// their controls. Collapsible; hidden while there is nothing to show, and it
+// opens by itself when the first download starts.
+let queueWasEmpty = true;
+
 function renderQueue() {
-  const running = queue.filter((job) => job.status !== 'queued').length;
-  const waiting = queue.length - running;
+  const waiting = queue.filter((job) => job.status === 'queued').length;
+  const paused = queue.filter((job) => job.status === 'paused').length;
+  const running = queue.length - waiting - paused;
   $('queue').classList.toggle('hidden', !queue.length);
-  $('queue-summary').textContent = 'Queue · ' + [running && running + ' running', waiting && waiting + ' waiting'].filter(Boolean).join(', ');
-  $('queue-list').replaceChildren(...queue.map(queueItem));
+  if (queue.length && queueWasEmpty) $('queue').open = true;
+  queueWasEmpty = !queue.length;
+  if (cancelArmed && !queue.some((job) => job.id === cancelArmed)) cancelArmed = null;
+  $('queue-summary').textContent = 'Downloads · ' + [running && running + ' running', paused && paused + ' paused', waiting && waiting + ' waiting'].filter(Boolean).join(', ');
+  let place = 0;
+  $('queue-list').replaceChildren(...queue.map((job) => queueItem(job, job.status === 'queued' ? ++place : 0)));
 }
 
 // The background replies { job, queue }; a stale copy still running after an
