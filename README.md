@@ -123,37 +123,28 @@ what it does, how to install it, and how it works.
 
 ## Recent changes <img src="browser-extension/extension/icons/icon-16.png">
 
-- Export state outside the popup: while a download runs, the toolbar icon
-  shows a progress badge (`42%`, the count when several run, then a check or
-  `!`) with the title in its tooltip, and a "started" notification is
-  replaced by the finished/failed one. All of it can be turned off in
-  Settings.
-- "Download to a specific folder" and the Settings **Browse...** buttons open
-  the normal Windows folder dialog (with its own "Make New Folder" button).
-  The extension's background script runs the dialog and starts the download
-  or saves the setting afterwards, so it works even though the popup closes
-  while the dialog has focus.
-- Many more settings: notifications and badge, theme (System/Light/Dark),
-  popup font (System default/Easy to read/Serif/Monospace), startup tab, remember last-used options, download history, host/yt-dlp versions and a reset button.
-- YouTube tab: pick the video container (MP4, MKV or WebM), with a default in
-  Settings. WebM is limited to VP9/AV1 and falls back to MP4 if the video
-  doesn't offer them.
+- Toolbar icon shows download progress (`42%`, a count, then a check or `!`),
+  with the title in its tooltip. A "started" notification is replaced by the
+  finished/failed one. Both can be turned off in Settings.
+- "Download to a specific folder" and Settings **Browse...** open the normal
+  Windows folder dialog. The background script runs it, so it still works
+  after the popup closes.
+- More settings: notifications and badge, theme, popup font, startup tab,
+  remembered options, download history, version info and a reset button.
+- YouTube: pick the container (MP4, MKV or WebM) with a default in Settings.
+  WebM needs VP9/AV1 and falls back to MP4 without them.
+- YouTube: new **Clip** tab (Video / Audio / Clip). Uses the X GIF trim
+  timeline, defaults to a 10 s clip from the playhead, and Start/End boxes
+  accept nudges like `+10s`, `-500ms` or `+1:30`. Sizes scale to the clip,
+  **Include audio** applies. Output is H.264 + AAC or VP9 + Opus (WebM).
+  Needs the rebuilt native host.
+- YouTube: new "Preferred codec" picker (H.264 + AAC, VP9 + Opus or
+  AV1 + Opus). Lists only codecs the video offers and falls back to H.264
+  with a notice. Needs the rebuilt native host.
+- Web tab detects more: lazy-loaded images, CSS backgrounds, media in iframes
+  and shadow DOM, and HLS/DASH streams. If yt-dlp can't handle a page, the
+  popup falls back to the Web tab.
 
-- YouTube tab: new **Clip** tab (Video / Audio / Clip). Same trim timeline as
-  the X GIF (shared code), a 10 s clip that starts where the video is
-  playing now, Start/End boxes that accept `+1000` / `-250` (centiseconds)
-  or `+10s` / `+500ms` / `+1:30` to nudge the value, resolution sizes and
-  the estimate scale to the clip length, and **Include audio** applies too.
-  Output is H.264 + AAC (MP4/MKV) or VP9 + Opus (WebM). Needs the rebuilt
-  native host (the tab stays disabled with a hint until then).
-- YouTube tab: new "Preferred codec" picker under Resolution (H.264 + AAC as
-  MP4, VP9 + Opus or AV1 + Opus as WebM). Only codecs the video offers are
-  listed; if one isn't available at the chosen resolution it falls back to
-  H.264 and says so. Needs the rebuilt native host.
-- Better page detection on the Web tab: the page scan now also picks up
-  lazy-loaded images (`data-src` etc.), CSS background images, media inside
-  iframes and shadow DOM, and HLS/DASH streams. If yt-dlp can't handle a
-  page (not only "unsupported URL"), the popup falls back to the Web tab.
 
 ## Layout <img src="browser-extension/extension/icons/icon-16.png">
 
