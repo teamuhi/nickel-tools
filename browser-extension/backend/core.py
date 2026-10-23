@@ -335,6 +335,30 @@ def dedupe_path(path):
         n += 1
 
 
+def _progressive(f):
+    return bool(f.get('url')) and f.get('protocol') in ('https', 'http') and f.get('ext') in ('mp4', 'webm', 'm4a')
+
+
+def preview_streams_from_info(info):
+    """(video_url, audio_url) a <video> / <audio> pair can play for the Clip
+    preview; the smallest streams, since it only has to be recognisable and
+    must load fast. A stream with sound in it needs no audio_url; YouTube only
+    has video-only ones, so the audio comes from its lowest-bitrate audio
+    stream. Either is None when the page has only HLS/DASH-manifest streams."""
+    formats = [f for f in info.get('formats') or [] if _progressive(f)]
+    has_v = lambda f: f.get('vcodec') not in (None, 'none') and f.get('height') and f['ext'] != 'm4a'
+    has_a = lambda f: f.get('acodec') not in (None, 'none')
+    muxed = [f for f in formats if has_v(f) and has_a(f)]
+    silent = [f for f in formats if has_v(f) and not has_a(f)]
+    # Smallest picture first; among equals H.264 (plays everywhere), then the lower bitrate.
+    video = min(muxed or silent, key=lambda f: (f['height'], not re.match(r'^(avc1|h264)', f.get('vcodec') or ''), f.get('tbr') or 0), default=None)
+    audio = None
+    if video and not has_a(video):
+        sounds = [f for f in formats if has_a(f) and f.get('vcodec') in (None, 'none') and 'DRC' not in (f.get('format_note') or '')]
+        audio = min(sounds, key=lambda f: (-(f.get('language_preference') or 0), f['ext'] != 'm4a', f.get('abr') or f.get('tbr') or 999), default=None)
+    return (video['url'] if video else None), (audio['url'] if audio else None)
+
+
 def fetch_formats(url, ffmpeg_location=None):
     """Returns the /formats-style info dict for `url`.
 
@@ -365,6 +389,7 @@ def fetch_formats(url, ffmpeg_location=None):
         'meta': auto_meta(info),
         'best_audio_kbps': best_audio_kbps(info),
         'clip': True,  # this host can cut clips (the popup hides the Clip tab otherwise)
+        **dict(zip(('preview_url', 'preview_audio_url'), preview_streams_from_info(info))),
         'ytdlp': errors.ytdlp_version_info(),
     }
 

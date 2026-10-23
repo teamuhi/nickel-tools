@@ -165,6 +165,7 @@ RADIUS = 16
 BORDER = 1
 LINE_H = 24
 GAP = 12
+TEXT_GAP = 16  # header -> the tweet's text
 TR_LABEL_H = 20  # "Translated from …" line above translated text
 MAX_TALL = 1.25
 MERGED_MAX_TALL = 3
@@ -408,7 +409,7 @@ def build_card(tweet, opts, avatar_path, own=None, quote=None, quote_avatar_path
     y = pad + AVATAR * S
     text_y = date_y = label_y = 0
     if text_lines:
-        text_y = y + GAP * S
+        text_y = y + TEXT_GAP * S
         if own_tr:
             label_y = text_y
             text_y += TR_LABEL_H * S

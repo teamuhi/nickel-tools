@@ -19,6 +19,8 @@
 
   const CONTAINERS = ['mp4', 'mkv', 'webm'];
   const CLIP_DEFAULT_SECONDS = 10; // initial length of a new clip
+  const PREVIEW_DEFAULT_VOLUME = 0.1; // the starting level, and what the sound button restores when the slider was at 0
+  const PREVIEW_SCRUB_MS = 120; // wait for a dragged handle to settle before seeking the preview
   const CLIP_MIN_AHEAD = 1; // a playhead closer than this to the end starts the clip at 0 instead
 
   const el = {
@@ -31,6 +33,7 @@
     tags: $('yt-tags'), square: $('yt-square'), squareRow: $('yt-square-row'), edit: $('yt-edit'), editRow: $('yt-edit-row'),
     form: $('yt-meta-form'), coverFile: $('yt-cover-file'), withAudio: $('yt-with-audio'),
     codecRow: $('yt-codec-row'), clipBox: $('yt-clip'), clipLen: $('yt-clip-len'), clipEst: $('yt-clip-est'),
+    preview: $('yt-preview'), sound: $('yt-preview-sound'), soundBox: $('yt-preview-vol'), bar: $('yt-preview-bar'), play: $('yt-preview-play'), seek: $('yt-preview-seek'), time: $('yt-preview-time'), note: $('yt-preview-note'), volume: $('yt-preview-volume'),
   };
   const fields = Object.fromEntries(META_FIELDS.map((k) => [k, $('mf-' + k)]));
 
@@ -40,19 +43,44 @@
   let videoCodec = 'h264';
   let container = 'mp4';
   let cover = { source: 'thumbnail', dataUrl: '' };
+  let previewFailed = false; // the stream wouldn't play: the thumbnail stays in the hero
+  let previewMuted = false;
+  let previewVolume = PREVIEW_DEFAULT_VOLUME; // 0..1
+  let soundTouched = false; // only a level the user picked is remembered
+  let soundFailed = false; // the audio stream wouldn't play: the sound button goes away
+  // The video stream has no sound (YouTube serves audio separately), so a hidden player plays it alongside.
+  const previewAudio = new Audio();
+  previewAudio.preload = 'auto';
 
-  // The Clip tab's trim timeline; the sizes shown on the page follow the clip length.
+  // The Clip tab's trim timeline; the sizes shown on the page follow the clip length,
+  // and dragging a thumb scrubs the preview to it.
   const trimCtl = createTrim({
     range: $('yt-range'), start: $('yt-clip-start'), end: $('yt-clip-end'), startText: $('yt-clip-start-t'), endText: $('yt-clip-end-t'),
-    onChange: () => renderClip(),
+    onChange(trim, moved) {
+      renderClip();
+      updatePreviewBar();
+      if (moved) scrubPreview(moved === 'start' ? trim.start : Math.max(trim.start, trim.end - 0.1));
+    },
   });
+
+  // Dragging a handle fires many events; seek once the handle settles, to the nearest keyframe where the browser can.
+  let scrubTimer = 0;
+  function scrubPreview(time) {
+    clearTimeout(scrubTimer);
+    scrubTimer = setTimeout(() => {
+      if (!el.preview.getAttribute('src')) return;
+      if (el.preview.fastSeek) el.preview.fastSeek(time); else el.preview.currentTime = time;
+    }, PREVIEW_SCRUB_MS);
+  }
+
+  const previewShown = () => kind === 'clip' && !!info && !!info.preview_url && !previewFailed;
 
   const formats = () => info.audio_formats || [];
   const currentFormat = () => formats().find((f) => f.id === prefs.format) || formats()[0];
   const isLossy = (f) => f && f.qualities.length > 0;
 
   function savePrefs() {
-    browser.storage.local.set({ ytKind: kind, ytAudio: prefs, ytCodec: videoCodec, ytContainer: container });
+    browser.storage.local.set({ ytKind: kind, ytAudio: prefs, ytCodec: videoCodec, ytContainer: container, ...(soundTouched && { ytPreviewVolume: { muted: previewMuted, volume: previewVolume } }) });
   }
 
   // WebM only carries VP9/AV1 (+ Opus), so it narrows the codec list and is
@@ -199,6 +227,20 @@
     el.clipBox.classList.toggle('hidden', kind !== 'clip');
     el.codecRow.classList.toggle('hidden', kind === 'clip');
     el.audio.classList.toggle('hidden', kind !== 'audio');
+
+    // The Clip tab plays the selected part where the thumbnail is.
+    const preview = previewShown();
+    el.preview.classList.toggle('hidden', !preview);
+    el.thumb.classList.toggle('hidden', preview || !info.thumbnail);
+    el.soundBox.classList.toggle('hidden', !preview || soundFailed);
+    el.bar.classList.toggle('hidden', !preview);
+    el.note.classList.toggle('hidden', !preview);
+    el.duration.classList.toggle('hidden', preview || !info.duration);
+    if (!preview) {
+      el.preview.pause();
+    } else {
+      scrubPreview(trimCtl.get().start);
+    }
   }
 
   function formatDuration(seconds) {
@@ -215,10 +257,17 @@
     info = Object.assign({ audio_formats: [], meta: { title: data.title || '' } }, data);
     noteOutdatedHost('youtube', outdated);
     el.title.value = '';
-    el.hero.classList.toggle('hidden', !info.thumbnail);
+    el.hero.classList.toggle('hidden', !info.thumbnail && !info.preview_url);
     if (info.thumbnail) el.thumb.src = info.thumbnail;
     el.duration.textContent = info.duration ? formatDuration(info.duration) : '';
-    el.duration.classList.toggle('hidden', !info.duration);
+    // The stream starts loading now, so it is ready by the time the Clip tab is opened.
+    previewFailed = false;
+    soundFailed = false;
+    el.preview.poster = info.thumbnail || '';
+    if (info.preview_url && !!info.clip && !!info.duration) el.preview.src = info.preview_url;
+    else el.preview.removeAttribute('src');
+    if (info.preview_audio_url && el.preview.getAttribute('src')) previewAudio.src = info.preview_audio_url;
+    else previewAudio.removeAttribute('src');
     el.vTitle.textContent = info.title || '';
     el.vChannel.textContent = info.channel || '';
 
@@ -342,6 +391,89 @@
     refreshOutput();
   });
   el.withAudio.addEventListener('change', refreshOutput);
+
+  // Start the preview at the clip, loop it inside the clip, and fall back to the thumbnail if the stream won't play.
+  el.preview.addEventListener('loadedmetadata', () => { el.preview.currentTime = trimCtl.get().start; });
+  el.preview.addEventListener('timeupdate', () => {
+    const { start, end } = trimCtl.get();
+    if (el.preview.currentTime >= end || el.preview.currentTime < start - 0.25) el.preview.currentTime = start;
+    else syncAudio();
+  });
+
+  // Keep the audio player on the video's clock.
+  const hasAudio = () => previewAudio.hasAttribute('src');
+  function syncAudio() {
+    if (hasAudio() && Math.abs(previewAudio.currentTime - el.preview.currentTime) > 0.3) previewAudio.currentTime = el.preview.currentTime;
+  }
+  function playAudio() {
+    if (!hasAudio()) return;
+    syncAudio();
+    previewAudio.play().catch(() => {});
+  }
+  ['play', 'playing'].forEach((name) => el.preview.addEventListener(name, playAudio));
+  ['pause', 'waiting', 'ended'].forEach((name) => el.preview.addEventListener(name, () => previewAudio.pause()));
+  ['seeking', 'seeked'].forEach((name) => el.preview.addEventListener(name, syncAudio));
+  previewAudio.addEventListener('loadedmetadata', () => { previewAudio.currentTime = trimCtl.get().start; });
+  previewAudio.addEventListener('error', () => {
+    if (!hasAudio()) return;
+    soundFailed = true;
+    setKind();
+  });
+
+  // Our own play bar (the browser's would show a dead volume button for a video-only stream): play/pause,
+  // a position inside the clip, and elapsed / clip length.
+  function updatePreviewBar() {
+    const { start, end } = trimCtl.get();
+    const elapsed = Math.min(end - start, Math.max(0, el.preview.currentTime - start));
+    el.seek.max = end - start;
+    if (document.activeElement !== el.seek) el.seek.value = elapsed;
+    el.time.textContent = elapsed.toFixed(1) + ' / ' + (end - start).toFixed(1) + ' s';
+    const playing = !el.preview.paused;
+    el.play.innerHTML = ICONS[playing ? 'pause' : 'play'];
+    el.play.title = el.play.ariaLabel = playing ? 'Pause preview' : 'Play preview';
+  }
+  function tickPreviewBar() {
+    updatePreviewBar();
+    if (!el.preview.paused) requestAnimationFrame(tickPreviewBar);
+  }
+  el.play.addEventListener('click', () => { if (el.preview.paused) el.preview.play().catch(() => {}); else el.preview.pause(); });
+  el.preview.addEventListener('click', () => el.play.click());
+  el.seek.addEventListener('input', () => scrubPreview(trimCtl.get().start + Number(el.seek.value)));
+  el.preview.addEventListener('play', tickPreviewBar);
+  ['pause', 'seeked', 'loadedmetadata'].forEach((name) => el.preview.addEventListener(name, updatePreviewBar));
+
+  // One mute switch + volume slider for whichever stream carries the sound.
+  function applySound() {
+    el.preview.muted = previewAudio.muted = previewMuted;
+    el.preview.volume = previewAudio.volume = previewVolume;
+    el.volume.value = previewVolume;
+    const silent = previewMuted || previewVolume === 0;
+    el.sound.setAttribute('aria-pressed', String(silent));
+    el.sound.title = el.sound.ariaLabel = silent ? 'Unmute preview' : 'Mute preview';
+  }
+  el.sound.addEventListener('click', () => {
+    if (previewMuted || previewVolume === 0) {
+      previewMuted = false;
+      if (previewVolume === 0) previewVolume = PREVIEW_DEFAULT_VOLUME;
+    } else {
+      previewMuted = true;
+    }
+    applySound();
+    soundTouched = true;
+    savePrefs();
+  });
+  el.volume.addEventListener('input', () => {
+    previewVolume = Number(el.volume.value);
+    if (previewVolume > 0) previewMuted = false;
+    applySound();
+  });
+  el.volume.addEventListener('change', () => { soundTouched = true; savePrefs(); });
+  el.preview.addEventListener('error', () => {
+    if (!el.preview.getAttribute('src')) return;
+    previewFailed = true;
+    setKind();
+  });
+
   el.codec.addEventListener('change', () => {
     videoCodec = el.codec.value;
     savePrefs();
@@ -368,7 +500,7 @@
       : 'Open a web page with a video or audio to download it.'),
     loadingText: 'Loading media info…',
     load: (url) => Promise.all([
-      loadPrefs(['ytKind', 'ytAudio', 'ytCodec', 'ytContainer']),
+      loadPrefs(['ytKind', 'ytAudio', 'ytCodec', 'ytContainer', 'ytPreviewVolume']),
       browser.storage.local.get('defaultContainer'),
       send({ type: 'getFormats', url }),
       send({ type: 'getPlayhead', tabId: currentTabId }).then((res) => res.time, () => null),
@@ -381,6 +513,10 @@
         : VIDEO_CODECS[videoCodec].ext === 'webm' ? 'webm'
           : CONTAINERS.includes(defaults.defaultContainer) ? defaults.defaultContainer : 'mp4';
       prefs = Object.assign(prefs, stored.ytAudio);
+      const sound = stored.ytPreviewVolume || {};
+      previewMuted = sound.muted === true;
+      previewVolume = Number.isFinite(sound.volume) ? Math.min(1, Math.max(0, sound.volume)) : PREVIEW_DEFAULT_VOLUME;
+      applySound();
       populate(data, playhead);
     }),
     payload() {

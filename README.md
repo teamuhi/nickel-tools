@@ -25,7 +25,9 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
   default; turn it off for a silent video.
 
 - **YouTube clip**: the **Clip** tab downloads just a piece of a video. Drag
-  the timeline handles or type the times; the cut is frame-accurate.
+  the timeline handles or type the times; the cut is frame-accurate. A small
+  preview of the selected part plays on top, with sound (volume slider + mute), and
+  loops inside it.
 
 - **YouTube audio**: extract MP3, M4A, Opus, OGG, FLAC, ALAC or WAV at your
   chosen quality, with editable title, artist and cover art embedded as tags.
@@ -123,6 +125,8 @@ what it does, how to install it, and how it works.
 
 ## Recent changes <img src="browser-extension/extension/icons/icon-16.png">
 
+- Clip tab plays a looping preview (144p, with adjustable sound) of the selected part; the tweet card
+  preview keeps the tweet's line breaks and blank lines.
 - Toolbar icon shows download progress (`42%`, a count, then a check or `!`),
   with the title in its tooltip. A "started" notification is replaced by the
   finished/failed one. Both can be turned off in Settings.

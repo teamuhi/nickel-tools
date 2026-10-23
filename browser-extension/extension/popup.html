@@ -185,8 +185,22 @@
             <div class="yt-card">
               <div id="yt-hero" class="yt-hero hidden">
                 <img id="thumb" class="hero hero-media" alt="">
+                <video id="yt-preview" class="hero hero-media hidden" playsinline preload="auto"></video>
+                <div id="yt-preview-vol" class="preview-vol hidden">
+                  <button id="yt-preview-sound" class="preview-btn preview-sound" type="button" aria-label="Mute preview" title="Mute preview" aria-pressed="false">
+                    <svg class="ico-on" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4zM15.5 8.5a5 5 0 0 1 0 7M19 5a10 10 0 0 1 0 14"/></svg>
+                    <svg class="ico-off" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M11 5 6 9H2v6h4l5 4zM22 9l-6 6M16 9l6 6"/></svg>
+                  </button>
+                  <input type="range" id="yt-preview-volume" min="0" max="1" step="0.05" value="0.1" aria-label="Preview volume">
+                </div>
+                <div id="yt-preview-bar" class="preview-bar hidden">
+                  <button id="yt-preview-play" class="preview-btn" type="button" aria-label="Play preview" title="Play preview"></button>
+                  <input type="range" id="yt-preview-seek" min="0" max="1" step="0.05" value="0" aria-label="Preview position">
+                  <span id="yt-preview-time" class="preview-time">0.0 / 0.0 s</span>
+                </div>
                 <span id="yt-duration" class="yt-duration hidden"></span>
               </div>
+              <div id="yt-preview-note" class="yt-preview-note hidden">Preview only: low quality. The downloaded clip uses the resolution you pick below.</div>
               <div class="yt-caption">
                 <div id="yt-vtitle" class="yt-vtitle"></div>
                 <div id="yt-vchannel" class="yt-vchannel"></div>
