@@ -103,6 +103,8 @@ if (Test-Path $producedCrx) { Remove-Item $producedCrx -Force }
 
 & $packer "--pack-extension=$outDir" "--pack-extension-key=$keyPath" --no-sandbox | Out-Null
 
+# Chrome writes the .crx asynchronously; wait for it instead of checking once.
+for ($i = 0; $i -lt 60 -and -not (Test-Path $producedCrx); $i++) { Start-Sleep -Milliseconds 500 }
 if (-not (Test-Path $producedCrx)) {
   throw "Expected $producedCrx after packing but it wasn't created -- --pack-extension's output naming may have changed."
 }
