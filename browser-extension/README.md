@@ -184,6 +184,17 @@ process. Notes:
   restarted.
 - Cancelling a Web download keeps files already saved earlier in the same job;
   only the half-written one is removed.
+- While the browser retries blocked Web files (see below) a download can only
+  be cancelled, not paused.
+
+Web files a site refuses to the native host (HTTP 401/403 from hotlink
+protection, bot checks or cookie-only CDNs, or any other non-local failure)
+are first retried without a Referer, then downloaded by the browser itself
+through the `downloads` API (the same request as right-click > Save as, with
+your cookies). The browser saves each one to its own download folder; the host
+(`importFile`) then moves it into your Web save location and converts it like
+any other download, and the entry is removed from the browser's download list.
+Embedded players (YouTube, Vimeo, ...) still go through yt-dlp only.
 - Needs the updated native host; an older one never answers `controlJob`, and
   the panel then says the host needs reinstalling.
 
@@ -219,7 +230,12 @@ The gear icon opens the settings. Each category (Save locations, YouTube, Notifi
 - **History**: the last 20 downloads (5 shown, **Show all** for the rest) with
   source, format and time. Per entry: show in folder, open the source page
   (not available for entries saved by older versions) and remove; plus a
-  clear button.
+  clear button. Below it, the **System log**: the last 200 errors, warnings
+  and browser-retry steps (5 shown) with their full detail (code, hint, page,
+  URL, raw message or stack). Click one to expand it; **Copy** copies the whole
+  log, **Host log** shows `%LOCALAPPDATA%
+ickel-tools\host.log` (the native
+  host's own log with full tracebacks), **Clear** empties it.
 - **Maintenance**: extension, host and yt-dlp versions, and a reset button.
 
 If a file with the resulting name already exists (re-downloading the same

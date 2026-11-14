@@ -119,6 +119,11 @@ def classify_error(exc, source='youtube'):
         return result('E_FFMPEG_MISSING', 'ffmpeg is missing.', 'Reinstall nickel.tools so the bundled ffmpeg is restored.')
     if isinstance(exc, OSError) and not isinstance(exc, urllib.error.URLError) and getattr(exc, 'errno', None) in (errno.ENOSPC, errno.EACCES, errno.EPERM):
         return result('E_DISK', 'Could not write the file (disk full or no permission).', 'Free some space or choose another download folder.')
+    # A plain HTTP refusal of a direct file (not yt-dlp, whose errors are strings):
+    # hotlink protection, a bot check or a cookie-only CDN.
+    if isinstance(exc, urllib.error.HTTPError) and exc.code in (401, 403):
+        return result('E_BLOCKED', 'The site refused the download (HTTP %d).' % exc.code,
+                      'The site only serves this file to the browser. Right-click it on the page and choose "Save as".')
     if isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError)) and not (isinstance(exc, urllib.error.HTTPError)):
         return result('E_NETWORK', 'Network error.', 'Check your internet connection and try again.')
     if isinstance(exc, (KeyError, TypeError, AttributeError)):

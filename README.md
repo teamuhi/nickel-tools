@@ -69,6 +69,11 @@ Based on the fork by [leoconnn](https://github.com/leconnn/youtube-dl-extension)
 - **Download history**: Settings lists recent downloads with source, format and
   time. Each can show its file in the folder, reopen its page, or be removed.
 
+- **System log**: Settings > History also keeps a log of every error (with its
+  full detail: code, hint, URL and the raw message) and each browser-retry step.
+  Open an entry for the full text; **Copy** copies the whole log for a bug
+  report, and **Host log** shows the native host's log file (full tracebacks).
+
 ## How to Install <img src="browser-extension/extension/icons/icon-16.png">
 
 Windows only. One installer covers every supported browser you have: it
@@ -125,6 +130,13 @@ what it does, how to install it, and how it works.
 
 ## Recent changes <img src="browser-extension/extension/icons/icon-16.png">
 
+- Web tab: files a site refuses to the native host (hotlink protection, bot
+  checks, cookie-only CDNs) are retried once without a Referer, then downloaded
+  by the browser itself (like right-click > Save as) and moved into your Web
+  save location and converted as usual. A refusal is now reported as
+  `E_BLOCKED` instead of "yt-dlp is outdated". Adds the `downloads` permission;
+  needs the rebuilt native host.
+- New **System log** in Settings > History with the full detail of every error.
 - Clip tab plays a looping preview (144p, with adjustable sound) of the selected part; the tweet card
   preview keeps the tweet's line breaks and blank lines.
 - Toolbar icon shows download progress (`42%`, a count, then a check or `!`),

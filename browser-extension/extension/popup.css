@@ -2471,6 +2471,109 @@ video.hero-media {
   background: var(--surface-2);
 }
 
+/* ---------------------------------------------------------------- system log (Settings > History) */
+
+.log-head {
+  flex-wrap: wrap;
+  row-gap: var(--s1);
+}
+
+.log-tools {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1);
+}
+
+.log-entry {
+  padding: var(--s1) var(--s2) var(--s1) var(--s3);
+}
+
+.log-entry + .log-entry {
+  border-top: 1px solid var(--border);
+}
+
+.log-entry summary {
+  display: flex;
+  align-items: baseline;
+  gap: var(--s2);
+  min-height: 32px;
+  padding: 4px 0;
+  list-style: none;
+  cursor: pointer;
+}
+
+.log-entry summary::-webkit-details-marker {
+  display: none;
+}
+
+.log-level {
+  flex: none;
+  width: 40px;
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.log-entry.is-error .log-level {
+  color: var(--error-text);
+}
+
+.log-entry.is-warn .log-level {
+  color: var(--text);
+}
+
+.log-entry.is-info .log-level {
+  color: var(--success-text);
+}
+
+.log-msg {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  font-size: var(--fs-sm);
+  line-height: 1.4;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.log-entry[open] .log-msg {
+  white-space: normal;
+  word-break: break-word;
+}
+
+.log-time {
+  flex: none;
+  font-size: var(--fs-xs);
+  color: var(--text-muted);
+}
+
+.log-entry pre {
+  max-height: 180px;
+  margin: 0 0 var(--s1);
+  padding: var(--s2);
+  overflow: auto;
+  font-family: 'SF Mono', 'JetBrains Mono', Consolas, monospace;
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: var(--surface-2);
+  border-radius: var(--radius-sm);
+  user-select: text;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-strong) transparent;
+}
+
+@media (max-width: 360px) {
+  .log-time {
+    display: none;
+  }
+}
+
 /* Footer queue: collapsed to its summary until opened. */
 .queue {
   margin-bottom: var(--s3);

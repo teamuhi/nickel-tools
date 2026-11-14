@@ -200,6 +200,7 @@
       subfolder: el.subfolder.checked,
       convert: { image: el.convert.value || null, video: el.convertVideo.value || null, height: Number(el.videoHeight.value) || null },
       items: chosen().map(({ url, kind }) => ({ url, kind })),
+      userAgent: navigator.userAgent, // direct requests then look like the page's own
     }),
   };
 })();

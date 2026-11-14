@@ -9,6 +9,7 @@
     "nativeMessaging",
     "storage",
     "cookies",
+    "downloads",
     "scripting"
   ],
   "host_permissions": [

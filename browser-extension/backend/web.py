@@ -1,13 +1,22 @@
 # coding: utf-8
 """Web tab downloads: saves the images/video/audio a page exposes as direct
 files, and hands embedded players (YouTube, Vimeo, ...) to yt-dlp. Same
-on_progress protocol as core.run_download."""
+on_progress protocol as core.run_download.
+
+Direct files the host can't fetch (hotlink protection, bot checks,
+cookie-only CDNs) are handed back to the extension as `fallback`; it
+downloads them through the browser itself (the same request as "Save as")
+and passes each file to import_file(), which moves it into place and
+converts it like any other download."""
 
 from __future__ import unicode_literals
 
+import logging
 import mimetypes
 import os
 import re
+import shutil
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -19,8 +28,17 @@ import errors
 import render
 import twitter
 
+log = logging.getLogger('host.web')
+
 MAX_ITEMS = 300
 KINDS = ('image', 'video', 'audio', 'embed')
+DIRECT_KINDS = ('image', 'video', 'audio')  # plain files; the browser can fetch these when the host can't
+ACCEPT = {
+    'image': 'image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8',
+    'video': 'video/*,*/*;q=0.8',
+    'audio': 'audio/*,*/*;q=0.8',
+}
+BLOCKED_STATUSES = (401, 403)  # retried once without a Referer
 # Image conversion targets -> (Pillow format, file extension, extensions already in that format)
 IMAGE_FORMATS = {
     'png': ('PNG', 'png', ('png',)),
@@ -85,9 +103,26 @@ def _file_name(url, headers):
     return sanitize_filename(root or 'file', restricted=False) + ext
 
 
-def _download_direct(item, page_url, target_dir, on_overall):
-    req = urllib.request.Request(item['url'], headers={'User-Agent': twitter.USER_AGENT, 'Referer': page_url})
-    with urllib.request.urlopen(req, timeout=60) as resp:
+def _open_direct(item, page_url, user_agent):
+    """Requests the file the way the page's browser would; on 401/403 tries
+    once more without a Referer (some hotlink checks reject a foreign one but
+    allow none)."""
+    headers = {
+        'User-Agent': user_agent or twitter.USER_AGENT,
+        'Accept': ACCEPT.get(item['kind'], '*/*'),
+        'Accept-Language': 'en-US,en;q=0.9',
+    }
+    try:
+        return urllib.request.urlopen(urllib.request.Request(item['url'], headers=dict(headers, Referer=page_url)), timeout=60)
+    except urllib.error.HTTPError as e:
+        if e.code not in BLOCKED_STATUSES:
+            raise
+        e.close()
+    return urllib.request.urlopen(urllib.request.Request(item['url'], headers=headers), timeout=60)
+
+
+def _download_direct(item, page_url, target_dir, on_overall, user_agent=None):
+    with _open_direct(item, page_url, user_agent) as resp:
         path = core.dedupe_path(os.path.join(target_dir, _file_name(item['url'], resp.headers)))
         total = int(resp.headers.get('Content-Length') or 0)
         done = 0
@@ -220,23 +255,81 @@ def _download_embed(item, target_dir, ffmpeg_location, on_overall):
         return (downloaded[0].get('filepath') if downloaded else None) or ydl.prepare_filename(info)
 
 
-def run_web_download(items, page_url, on_progress, ffmpeg_location=None, download_dir=None, title=None, subfolder=False, convert=None):
+def parse_convert(convert):
     """`convert` is {'image': <IMAGE_FORMATS key>, 'video': <VIDEO_FORMATS key>,
     'height': <VIDEO_HEIGHTS value>} (any may be missing/None to keep the
-    original); images and videos/embeds are re-encoded after they download.
-    `height` only applies together with a video target. A bare string is
-    treated as the image target."""
+    original); a bare string is the image target. Returns (targets by item
+    kind, height or None). `height` only applies together with a video target."""
     convert = convert if isinstance(convert, dict) else {'image': convert}
+    video = convert.get('video') if convert.get('video') in VIDEO_FORMATS else None
     targets = {
         'image': convert.get('image') if convert.get('image') in IMAGE_FORMATS else None,
-        'video': convert.get('video') if convert.get('video') in VIDEO_FORMATS else None,
-        'embed': convert.get('video') if convert.get('video') in VIDEO_FORMATS else None,
+        'video': video,
+        'embed': video,
     }
     try:
         height = int(convert.get('height') or 0)
     except (TypeError, ValueError):
         height = 0
-    height = height if height in VIDEO_HEIGHTS else None
+    return targets, (height if height in VIDEO_HEIGHTS else None)
+
+
+def apply_convert(path, kind, targets, height, on_convert, ffmpeg_location=None):
+    """Converts a downloaded file per `targets`. Returns (path, note): note is
+    e.g. 'SVG to JPG' when the file could not be converted and stays as
+    downloaded, else None."""
+    target = targets.get(kind)
+    if not target:
+        return path, None
+    before = os.path.splitext(path)[1].lstrip('.').upper() or 'file'
+    try:
+        if kind == 'image':
+            return convert_image(path, target), None
+        on_convert()
+        return convert_video(path, target, on_convert, ffmpeg_location, height), None
+    except errors.JobCancelled:
+        raise
+    except Exception:
+        log.warning('could not convert %s to %s', path, target, exc_info=True)
+        return path, '%s to %s' % (before, target.upper())
+
+
+def import_file(src, target_dir, kind, convert=None, ffmpeg_location=None):
+    """Moves a file the browser downloaded (the fallback for blocked direct
+    files) into `target_dir` and converts it like run_web_download would.
+    Returns {'path', 'kept'}."""
+    if kind not in DIRECT_KINDS:
+        raise ValueError('URL is missing or invalid')
+    if not src or not os.path.isfile(src):
+        raise FileNotFoundError('The browser download was not found: %s' % src)
+    if not target_dir:
+        raise ValueError('No save location for the browser download')
+    os.makedirs(target_dir, exist_ok=True)
+    dest = core.dedupe_path(os.path.join(target_dir, os.path.basename(src)))
+    shutil.move(src, dest)
+    targets, height = parse_convert(convert)
+    path, kept = apply_convert(dest, kind, targets, height, lambda **_: None, ffmpeg_location)
+    return {'path': path, 'kept': kept}
+
+
+def saved_summary(saved, target_dir):
+    """The finished report's filename/path: the file itself for one, else the folder."""
+    return {
+        'filename': os.path.basename(saved[0]) if len(saved) == 1 else '%d files' % len(saved),
+        'path': saved[0] if len(saved) == 1 else target_dir,
+    }
+
+
+def run_web_download(items, page_url, on_progress, ffmpeg_location=None, download_dir=None, title=None, subfolder=False,
+                     convert=None, user_agent=None):
+    """See parse_convert for `convert`. `user_agent` is the browser's, so
+    direct requests look like the page's own. Ends with the usual finished /
+    error report; direct files that failed (for any reason but a local one)
+    are listed in its `fallback` ({items, targetDir, convert, saved, total})
+    for the extension to fetch through the browser."""
+    targets, height = parse_convert(convert)
+    if not isinstance(user_agent, str) or len(user_agent) > 512:
+        user_agent = None
     try:
         items = validate_items(items)
     except ValueError as e:
@@ -256,6 +349,7 @@ def run_web_download(items, page_url, on_progress, ffmpeg_location=None, downloa
     saved, failures, last_error = [], 0, None
     first_error = ''
     kept = []  # "SVG to JPG"-style notes for files that could not be converted and stay as downloaded
+    retry = []  # direct files for the browser to fetch
     for i, item in enumerate(items):
         def on_overall(frac, i=i):
             on_progress(status='downloading', item=i + 1, total=total, percent=round((i + frac) / total * 100, 1))
@@ -268,36 +362,33 @@ def run_web_download(items, page_url, on_progress, ffmpeg_location=None, downloa
             if item['kind'] == 'embed':
                 path = _download_embed(item, target_dir, ffmpeg_location, on_overall)
             else:
-                path = _download_direct(item, page_url, target_dir, on_overall)
-            target = targets.get(item['kind'])
-            if target:
-                before = os.path.splitext(path)[1].lstrip('.').upper() or 'file'
-                try:
-                    if item['kind'] == 'image':
-                        path = convert_image(path, target)
-                    else:
-                        on_convert()
-                        path = convert_video(path, target, on_convert, ffmpeg_location, height)
-                except Exception:
-                    kept.append('%s to %s' % (before, target.upper()))
+                path = _download_direct(item, page_url, target_dir, on_overall, user_agent)
+            path, note = apply_convert(path, item['kind'], targets, height, on_convert, ffmpeg_location)
+            if note:
+                kept.append(note)
             saved.append(path)
+        except errors.JobCancelled:
+            raise
         except Exception as e:
-            failures += 1
+            err = errors.classify_error(e, 'web')
+            log.warning('web item failed (%s): %s', err['errorCode'], item['url'], exc_info=True)
             last_error = e
-            first_error = first_error or errors.classify_error(e, 'web')['error']
+            if item['kind'] in DIRECT_KINDS and err['errorCode'] != 'E_DISK':
+                retry.append({'url': item['url'], 'kind': item['kind'], 'error': err['errorDetail'] or err['error']})
+                continue
+            failures += 1
+            first_error = first_error or err['error']
 
-    if not saved:
-        on_progress(status='error', **errors.classify_error(last_error, 'web'))
-        return
-    done = {
-        'filename': os.path.basename(saved[0]) if len(saved) == 1 else '%d files' % len(saved),
-        'path': saved[0] if len(saved) == 1 else target_dir,
-    }
     notes = []
     if failures:
         notes.append('%d of %d failed: %s' % (failures, total, first_error))
     if kept:
         notes.append("%d file(s) kept as the original (could not convert %s)" % (len(kept), ', '.join(sorted(set(kept)))))
-    if notes:
-        done['warning'] = '\n'.join(notes)
-    on_progress(status='finished', percent=100, **done)
+    extra = {'warning': '\n'.join(notes)} if notes else {}
+    if retry:
+        extra['fallback'] = {'items': retry, 'targetDir': target_dir, 'convert': convert, 'saved': saved, 'total': total}
+
+    if not saved:
+        on_progress(status='error', **dict(errors.classify_error(last_error, 'web'), **extra))
+        return
+    on_progress(status='finished', percent=100, **dict(saved_summary(saved, target_dir), **extra))

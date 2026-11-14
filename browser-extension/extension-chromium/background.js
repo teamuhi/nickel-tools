@@ -116,16 +116,9 @@ function pollJobStatus(id) {
         // per-tick requestId used only for response correlation -- see the
         // comment above) which must NOT overwrite the job's real, stable
         // id. Only the actual status fields belong in the job.
-        const { type, ok, requestId: _wrapperRequestId, ...statusFields } = res;
-        Object.assign(job, statusFields);
-        settlePending(job);
-        persistState();
-        broadcast(job.tabUrl);
-        updateBadge();
-        if (isEnded(job.status)) {
-          stopPolling(id);
-          jobDone(job);
-        }
+        // (applyUpdate strips them, and starts a pending browser fallback.)
+        applyUpdate(job, res);
+        if (isEnded(job.status) || fallbacksRunning.has(id)) stopPolling(id);
       })
       .catch((err) => {
         console.warn('[bg] pollJobStatus tick FAILED for', id, err && err.message);
@@ -213,8 +206,29 @@ function makeError(msg) {
 }
 
 function failure(err) {
+  logEvent('error', err.message, { code: err.code, hint: err.hint, detail: err.detail || err.stack });
   return { ok: false, error: err.message, errorCode: err.code, errorHint: err.hint, errorDetail: err.detail };
 }
+
+// ---------------------------------------------------------------- system log
+// Every error (and each browser-fallback step) with its full detail, kept in
+// storage.local for Settings > History > System log. Writes are chained so two
+// entries logged at once can't overwrite each other.
+const LOG_MAX = 200;
+let logChain = Promise.resolve();
+
+function logEvent(level, message, fields = {}) {
+  (level === 'error' ? console.error : level === 'warn' ? console.warn : console.log)('[nickel.tools]', message, fields);
+  const entry = { at: Date.now(), level, message: String(message || 'Unknown error'), ...fields };
+  logChain = logChain.then(async () => {
+    const { logs = [] } = await chrome.storage.local.get('logs');
+    logs.unshift(entry);
+    await chrome.storage.local.set({ logs: logs.slice(0, LOG_MAX) });
+  }).catch(() => {});
+}
+
+self.addEventListener('error', (e) => logEvent('error', e.message, { context: 'background', detail: e.error && e.error.stack }));
+self.addEventListener('unhandledrejection', (e) => logEvent('error', (e.reason && e.reason.message) || String(e.reason), { context: 'background', detail: e.reason && e.reason.stack }));
 
 const isActive = (job) => job.status !== 'finished' && job.status !== 'error' && job.status !== 'cancelled'; // running (also paused) or queued
 const isRunning = (job) => isActive(job) && job.status !== 'queued';
@@ -228,7 +242,7 @@ function createNotification(id, options, callback) {
   chrome.notifications.create(...args, callback);
 }
 
-const STATUS_WORDS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+const STATUS_WORDS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card', retrying: 'Retrying in browser' };
 const BADGE_COLORS = { active: '#111111', finished: '#346538', error: '#9f2f2d' };
 const BADGE_FLASH_MS = { finished: 5000, error: 10000 };
 const DEFAULT_TITLE = 'Download media from this page';
@@ -316,6 +330,9 @@ async function jobDone(job) {
     return;
   }
   const isError = job.status === 'error';
+  const where = { source: job.source, title: job.title, url: job.url };
+  if (isError) logEvent('error', job.error, { ...where, code: job.errorCode, hint: job.errorHint, detail: job.errorDetail });
+  else if (job.warning) logEvent('warn', job.warning, where);
   flashBadge(isError ? 'error' : 'finished');
   updateBadge();
   prune();
@@ -378,39 +395,164 @@ function broadcast(tabUrl) {
   });
 }
 
+// Everything but jobUpdate answers a sendRequest (pong, formatsResult, importFileResult, ...).
 function onPortMessage(msg) {
-  if (msg.type === 'pong' || msg.type === 'formatsResult' || msg.type === 'tweetResult' || msg.type === 'translateResult' || msg.type === 'configResult' || msg.type === 'controlJobResult' || msg.type === 'jobStatusResult' || msg.type === 'browseFolderResult' || msg.type === 'openPathResult' || msg.type === 'revealFileResult') {
-    const pending = pendingRequests[msg.requestId];
-    if (!pending) return;
-    delete pendingRequests[msg.requestId];
-    if (msg.ok === false) {
-      pending.reject(makeError(msg));
-    } else {
-      pending.resolve(msg);
-    }
-    return;
-  }
-
   if (msg.type === 'jobUpdate') {
-    console.log('[bg] jobUpdate received:', JSON.stringify(msg));
     const job = jobs[msg.requestId];
     if (!job) {
       console.warn('[bg] jobUpdate has no matching job -- dropped. requestId=', msg.requestId);
       return;
     }
-    Object.assign(job, msg);
-    settlePending(job);
-    persistState();
-    broadcast(job.tabUrl);
-    updateBadge();
-    if (isEnded(msg.status)) jobDone(job);
+    applyUpdate(job, msg);
+    return;
   }
+  const pending = pendingRequests[msg.requestId];
+  if (!pending) return;
+  delete pendingRequests[msg.requestId];
+  if (msg.ok === false) {
+    pending.reject(makeError(msg));
+  } else {
+    pending.resolve(msg);
+  }
+}
+
+function syncJob(job) {
+  persistState();
+  broadcast(job.tabUrl);
+  updateBadge();
+}
+
+// Applies a host status report. A Web job's final report may list files the host
+// was refused (`fallback`); the browser then fetches those before the job ends.
+function applyUpdate(job, fields) {
+  if (fallbacksRunning.has(job.id)) return; // the host is done; the browser fallback owns the job now
+  const { fallback, type, ok, requestId, ...update } = fields;
+  Object.assign(job, update);
+  if (fallback && fallback.items && fallback.items.length && (update.status === 'finished' || update.status === 'error') && !job.fallbackDone) {
+    job.fallbackDone = true;
+    runFallback(job, fallback);
+    return;
+  }
+  settlePending(job);
+  syncJob(job);
+  if (isEnded(job.status)) jobDone(job);
+}
+
+// ---------------------------------------------------------------- browser fallback
+// Web files the host was refused (hotlink protection, bot checks, cookie-only
+// CDNs) are downloaded by the browser itself -- the same request as "Save as" --
+// then handed back to the host, which moves each into the save location and
+// converts it. The host's part of the job has ended by then, so it can't be
+// paused; cancel stops it. Lives in memory only: if the service worker is
+// restarted mid-way, the job just ends with the host's own result (fallbackDone
+// is persisted, so it isn't retried twice).
+const fallbacksRunning = new Set();
+const fileName = (path) => String(path).split(/[\\/]/).pop();
+
+// Resolves to the downloaded file's full path. The entry is erased from the
+// browser's download list afterwards (the file stays; the host moves it).
+function browserDownload(url, job) {
+  return new Promise((resolve, reject) => {
+    let id = null;
+    const finish = (fn, value) => {
+      chrome.downloads.onChanged.removeListener(onChanged);
+      delete job.fallbackDownloadId;
+      fn(value);
+    };
+    const check = () => chrome.downloads.search({ id }).then(([item]) => {
+      if (!item) finish(reject, new Error('The browser download disappeared.'));
+      else if (item.state === 'complete') {
+        chrome.downloads.erase({ id }).catch(() => {});
+        finish(resolve, item.filename);
+      } else if (item.state === 'interrupted') {
+        finish(reject, Object.assign(new Error('The browser could not download it (' + (item.error || 'interrupted') + ').'), { code: 'E_BROWSER_DOWNLOAD' }));
+      }
+    });
+    const onChanged = (delta) => { if (delta.id === id && delta.state) check(); };
+    chrome.downloads.onChanged.addListener(onChanged);
+    chrome.downloads.download({ url, saveAs: false, conflictAction: 'uniquify' })
+      .then((newId) => { id = newId; job.fallbackDownloadId = id; return check(); })
+      .catch((e) => finish(reject, e));
+  });
+}
+
+async function runFallback(job, fb) {
+  fallbacksRunning.add(job.id);
+  const saved = [...(fb.saved || [])];
+  const kept = [];
+  let failed = 0;
+  let lastError = null;
+  const n = fb.items.length;
+  logEvent('info', 'The site refused ' + n + ' file(s) to nickel.tools; retrying through the browser', {
+    source: 'web', title: job.title, url: job.url, detail: fb.items.map((it) => it.url + '\n  host: ' + it.error).join('\n'),
+  });
+  for (const [i, item] of fb.items.entries()) {
+    if (job.pending === 'cancel') break;
+    Object.assign(job, { status: 'retrying', item: i + 1, total: n, percent: Math.round((i / n) * 100) });
+    syncJob(job);
+    try {
+      const file = await browserDownload(item.url, job);
+      const res = await sendRequest({ type: 'importFile', requestId: newRequestId(), path: file, targetDir: fb.targetDir, kind: item.kind, convert: fb.convert });
+      saved.push(res.path);
+      if (res.kept) kept.push(res.kept);
+      logEvent('info', 'Saved through the browser: ' + fileName(res.path), { source: 'web', url: item.url, detail: res.path });
+    } catch (e) {
+      if (job.pending === 'cancel') break;
+      failed += 1;
+      lastError = e;
+      logEvent('error', 'Browser retry failed: ' + e.message, {
+        source: 'web', code: e.code, url: item.url, detail: 'host: ' + item.error + '\nbrowser: ' + (e.detail || e.message),
+      });
+    }
+  }
+  fallbacksRunning.delete(job.id);
+
+  if (job.pending === 'cancel') {
+    job.status = 'cancelled';
+  } else if (saved.length) {
+    ['error', 'errorCode', 'errorHint', 'errorDetail'].forEach((key) => delete job[key]);
+    Object.assign(job, {
+      status: 'finished',
+      percent: 100,
+      filename: saved.length === 1 ? fileName(saved[0]) : saved.length + ' files',
+      path: saved.length === 1 ? saved[0] : fb.targetDir,
+      warning: [
+        job.warning,
+        failed && failed + ' of ' + fb.total + ' failed, also through the browser: ' + lastError.message,
+        kept.length && kept.length + ' file(s) kept as the original (could not convert ' + [...new Set(kept)].join(', ') + ')',
+      ].filter(Boolean).join('\n') || undefined,
+    });
+  } else {
+    job.status = 'error';
+    job.errorDetail = [job.errorDetail, 'Browser retry: ' + (lastError ? lastError.message : 'nothing to retry')].filter(Boolean).join('\n');
+  }
+  delete job.pending;
+  syncJob(job);
+  jobDone(job);
+}
+
+// Only cancel applies while the browser retries files (the host's part has ended).
+function controlFallback(job, action) {
+  if (action !== 'cancel') return { ok: false, error: "Can't pause while the browser retries a file." };
+  job.pending = 'cancel';
+  if (job.fallbackDownloadId != null) chrome.downloads.cancel(job.fallbackDownloadId).catch(() => {});
+  syncJob(job);
+  return { ok: true };
+}
+
+// Only cancel applies while the browser retries files (the host's part has ended).
+function controlFallback(job, action) {
+  if (action !== 'cancel') return { ok: false, error: "Can't pause while the browser retries a file." };
+  job.pending = 'cancel';
+  if (job.fallbackDownloadId != null) chrome.downloads.cancel(job.fallbackDownloadId).catch(() => {});
+  syncJob(job);
+  return { ok: true };
 }
 
 function onPortDisconnect() {
   const err = chrome.runtime.lastError;
   const message = 'Native host disconnected' + (err && err.message ? ': ' + err.message : '');
-  console.warn('[bg] onPortDisconnect:', message);
+  logEvent('warn', message, { context: 'native host' });
   port = null;
 
   Object.values(pendingRequests).forEach((p) => p.reject(new Error(message)));
@@ -418,7 +560,7 @@ function onPortDisconnect() {
 
   // Queued jobs keep waiting; only the one the dead host was running fails.
   // Collect it first: jobDone starts the next queued job, which must not be failed too.
-  const dead = Object.values(jobs).filter(isRunning);
+  const dead = Object.values(jobs).filter((job) => isRunning(job) && !fallbacksRunning.has(job.id)); // a browser fallback reports its own failure
   dead.forEach((job) => {
     job.status = 'error';
     job.error = message;
@@ -654,6 +796,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       if (!job || !isRunning(job) || !['pause', 'resume', 'cancel'].includes(message.action)) {
         return { ok: false, error: 'This download is no longer running.' };
       }
+      if (fallbacksRunning.has(job.id)) return controlFallback(job, message.action);
       return sendRequest({ type: 'controlJob', requestId: newRequestId(), jobId: job.id, action: message.action }, HOST_TIMEOUT_MS)
         .then(() => {
           job.pending = message.action;
@@ -679,6 +822,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ removed });
     });
     return true;
+  }
+
+  // Errors the popup hit on its own (script errors), for the system log.
+  if (message.type === 'log') {
+    logEvent(message.level || 'error', message.message, { context: 'popup', detail: message.detail });
+    sendResponse({ logged: true });
+    return false;
   }
 
   if (message.type === 'getConfig') {

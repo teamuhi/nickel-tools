@@ -62,7 +62,7 @@ log = logging.getLogger('host')
 
 # Reported to the popup's Maintenance section; also tells it which features
 # (folder browser, container choice) this host build understands.
-HOST_VERSION = '0.13.0'
+HOST_VERSION = '0.14.0'
 
 # Chromium's MV3 service worker can be killed and restarted mid-download by
 # the browser at any time, and reconnecting always spawns a NEW host.exe
@@ -309,7 +309,7 @@ def handle_download(msg):
         elif source == 'web':
             web.run_web_download(msg.get('items'), msg.get('pageUrl') or url, on_progress, ffmpeg_location=FFMPEG_LOCATION,
                                  download_dir=download_dir, title=title, subfolder=bool(msg.get('subfolder')),
-                                 convert=msg.get('convert'))
+                                 convert=msg.get('convert'), user_agent=msg.get('userAgent'))
         else:
             try:
                 core.validate_download_request(url, mode, quality, msg.get('audio'))
@@ -321,10 +321,26 @@ def handle_download(msg):
                               with_audio=msg.get('withAudio', True) is not False, clip=msg.get('clip'))
     except errors.JobCancelled:
         on_progress(status='error')  # reported as 'cancelled' by the gate
+    except Exception as e:  # never leave a job hanging without a final report
+        log.exception('download %s failed', request_id)
+        on_progress(status='error', **errors.classify_error(e, source))
     finally:
         if gate.cancelled and source != 'twitter':  # Twitter jobs work in a temp folder that is always removed
             core.discard_partials(core.ensure_download_dir(download_dir, source), started)
         remove_control(request_id)
+
+
+def handle_import_file(msg):
+    """Moves a file the browser downloaded for a Web job (its fallback for
+    files the host was refused) into the save location and converts it."""
+    request_id = msg.get('requestId')
+    try:
+        result = web.import_file(msg.get('path'), msg.get('targetDir'), msg.get('kind'), msg.get('convert'),
+                                 ffmpeg_location=FFMPEG_LOCATION)
+        send_message(dict(result, type='importFileResult', requestId=request_id, ok=True))
+    except Exception as e:
+        log.exception('importFile failed: %r', msg.get('path'))
+        send_message(dict(errors.classify_error(e, 'web'), type='importFileResult', requestId=request_id, ok=False))
 
 
 def handle_reveal_file(msg):
@@ -418,6 +434,7 @@ def _config_payload(request_id):
         'webDownloadDir': core.get_dir_override('web'),
         'hostVersion': HOST_VERSION,
         'ytdlp': errors.ytdlp_version_info(),
+        'hostLog': os.path.join(LOG_DIR, 'host.log'),  # Settings > History > System log can reveal it
     }
 
 
@@ -557,6 +574,8 @@ def main():
                 threading.Thread(target=handle_translate, args=(msg,), daemon=True).start()
             elif msg_type == 'formats':
                 threading.Thread(target=handle_formats, args=(msg,), daemon=True).start()
+            elif msg_type == 'importFile':
+                threading.Thread(target=handle_import_file, args=(msg,), daemon=False).start()
             elif msg_type == 'download':
                 # Not a daemon thread: if the browser closes our stdin (EOF)
                 # while a download is still running -- which does happen,

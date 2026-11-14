@@ -381,6 +381,8 @@ function renderJob(job) {
     progressText.textContent = 'Starting…';
   } else if (job.status === 'downloading') {
     progressText.textContent = 'Downloading' + (job.total > 1 ? ' ' + job.item + ' of ' + job.total : '') + '… ' + percent + '%';
+  } else if (job.status === 'retrying') {
+    progressText.textContent = 'The site blocked a direct download. Retrying in the browser' + (job.total > 1 ? ' ' + job.item + ' of ' + job.total : '') + '…';
   } else if (job.status === 'converting') {
     progressText.textContent = 'Converting' + (job.total > 1 ? ' ' + job.item + ' of ' + job.total : '') + '…' + (job.source === 'twitter' ? ' ' + percent + '%' : '');
   } else if (job.status === 'tagging') {
@@ -401,7 +403,7 @@ function renderJob(job) {
   }
 }
 
-const STATUS_LABELS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card' };
+const STATUS_LABELS = { starting: 'Starting', downloading: 'Downloading', paused: 'Paused', converting: 'Converting', tagging: 'Writing tags', rendering: 'Rendering card', retrying: 'Retrying in browser' };
 const PENDING_LABELS = { pause: 'Pausing…', resume: 'Resuming…', cancel: 'Cancelling…' };
 const CANCEL_CONFIRM_MS = 3000;
 
@@ -640,11 +642,64 @@ function renderHistory(history, showAll = false) {
   more.textContent = showAll ? 'Show less' : 'Show all (' + total + ')';
 }
 
+// ---- System log: every error (with its full detail) and browser-fallback step,
+// written by the background script to storage.local `logs`, newest first.
+const LOG_SHOWN = 5;
+const LOG_LEVELS = ['error', 'warn', 'info'];
+let logEntries = [];
+let logExpanded = false;
+let hostLogPath = '';
+
+// The full text of one entry: what an opened entry shows and what Copy copies.
+function logText(entry) {
+  return [
+    new Date(entry.at).toLocaleString() + '  ' + String(entry.level || 'error').toUpperCase() + (entry.code ? '  ' + entry.code : ''),
+    entry.message,
+    entry.hint && 'Hint: ' + entry.hint,
+    entry.source && 'Tab: ' + entry.source,
+    entry.context && 'From: ' + entry.context,
+    entry.title && 'Title: ' + entry.title,
+    entry.url && 'URL: ' + entry.url,
+    entry.detail && entry.detail !== entry.message && 'Detail:\n' + entry.detail,
+  ].filter(Boolean).join('\n');
+}
+
+function logItem(entry) {
+  const level = LOG_LEVELS.includes(entry.level) ? entry.level : 'error';
+  const item = document.createElement('details');
+  item.className = 'log-entry is-' + level;
+  const summary = document.createElement('summary');
+  summary.append(
+    textNode('span', 'log-level', level),
+    textNode('span', 'log-msg', (entry.code ? entry.code + ' · ' : '') + entry.message),
+    textNode('span', 'log-time', entry.at ? timeAgo(entry.at) : ''),
+  );
+  item.append(summary, textNode('pre', '', logText(entry)));
+  return item;
+}
+
+function renderLogs(logs, showAll = logExpanded) {
+  logEntries = logs || [];
+  logExpanded = showAll;
+  const total = logEntries.length;
+  const errorCount = logEntries.filter((e) => (e.level || 'error') === 'error').length;
+  $('log-title').textContent = 'System log' + (total ? ' (' + total + (errorCount ? ', ' + errorCount + ' errors' : '') + ')' : '');
+  $('copy-log').disabled = !total;
+  $('clear-log').disabled = !total;
+  const shown = showAll ? logEntries : logEntries.slice(0, LOG_SHOWN);
+  $('log-list').replaceChildren(...(total ? shown.map(logItem) : [textNode('div', 'list-empty hint', 'No errors logged')]));
+  const more = $('log-more');
+  more.classList.toggle('hidden', total <= LOG_SHOWN);
+  more.textContent = showAll ? 'Show less' : 'Show all (' + total + ')';
+}
+
 function loadSettings() {
   setSettingsStatus('Loading…');
   request({ type: 'getConfig' })
     .then((res) => {
       applyConfig(res);
+      hostLogPath = res.hostLog || '';
+      $('host-log').disabled = !hostLogPath;
       $('about-info').textContent = 'nickel.tools ' + browser.runtime.getManifest().version + ' · '
         + (res.hostVersion ? 'host ' + res.hostVersion : 'host outdated (reinstall nickel.tools to update it)');
       noteYtdlp(res.ytdlp);
@@ -653,11 +708,22 @@ function loadSettings() {
     .catch((err) => {
       setSettingsStatus('Error: ' + err.message);
     });
-  browser.storage.local.get([...Object.keys(SETTING_DEFAULTS), 'defaultContainer', 'history']).then((stored) => {
+  browser.storage.local.get([...Object.keys(SETTING_DEFAULTS), 'defaultContainer', 'history', 'logs']).then((stored) => {
     renderSettingValues(stored);
     renderHistory(stored.history);
+    renderLogs(stored.logs);
   });
 }
+
+// New entries show up live while Settings is open.
+browser.storage.onChanged.addListener((changes, area) => {
+  if (area === 'local' && changes.logs && !settingsPanel.classList.contains('hidden')) renderLogs(changes.logs.newValue);
+});
+
+// The popup's own script errors go to the system log too.
+const logPopupError = (message, detail) => send({ type: 'log', message, detail }).catch(() => {});
+window.addEventListener('error', (e) => logPopupError(e.message, e.error && e.error.stack));
+window.addEventListener('unhandledrejection', (e) => logPopupError((e.reason && e.reason.message) || String(e.reason), e.reason && e.reason.stack));
 
 // A typed path saves when the field loses focus or Enter is pressed; only that
 // field is sent, so an untouched one inheriting the YouTube path isn't pinned.
@@ -753,6 +819,26 @@ $('clear-history').addEventListener('click', () => {
 });
 
 $('history-more').addEventListener('click', () => renderHistory(historyEntries, !historyExpanded));
+
+$('log-more').addEventListener('click', () => renderLogs(logEntries, !logExpanded));
+
+$('clear-log').addEventListener('click', () => {
+  browser.storage.local.remove('logs').then(() => renderLogs([]));
+});
+
+$('copy-log').addEventListener('click', () => {
+  const text = 'nickel.tools ' + browser.runtime.getManifest().version + ' · ' + navigator.userAgent + '\n\n'
+    + logEntries.map(logText).join('\n\n----\n\n');
+  navigator.clipboard.writeText(text)
+    .then(() => flashSettingsStatus('Log copied'))
+    .catch((err) => setSettingsStatus('Error: ' + err.message));
+});
+
+$('host-log').addEventListener('click', () => {
+  send({ type: 'revealFile', path: hostLogPath })
+    .then(() => flashSettingsStatus('Opened host log folder'))
+    .catch((err) => setSettingsStatus('Error: ' + err.message));
+});
 
 // Expand all / Collapse all for the settings dropdowns; the label follows the sections' state.
 const foldAllBtn = $('fold-all');
